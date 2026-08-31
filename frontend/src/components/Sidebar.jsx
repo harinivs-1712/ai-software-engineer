@@ -1,6 +1,37 @@
 function Sidebar({
+  conversations,
+  activeConversationId,
   onNewChat,
+  onSelectConversation,
+  onDeleteConversation,
+  onRenameConversation,
 }) {
+
+  const handleRename = (
+    conversation
+  ) => {
+
+    const newTitle =
+      window.prompt(
+        "Rename conversation:",
+        conversation.title
+      );
+
+
+    if (
+      newTitle &&
+      newTitle.trim()
+    ) {
+
+      onRenameConversation(
+        conversation.id,
+        newTitle
+      );
+
+    }
+
+  };
+
 
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r border-gray-800 bg-gray-950 md:flex">
@@ -15,7 +46,7 @@ function Sidebar({
             AI
           </div>
 
-          <span className="text-sm font-semibold">
+          <span className="text-sm font-semibold text-white">
             AI Engineer
           </span>
 
@@ -30,10 +61,10 @@ function Sidebar({
 
         <button
           onClick={onNewChat}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-medium text-gray-200 transition hover:border-gray-600 hover:bg-gray-800"
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-medium text-gray-200 transition hover:bg-gray-800"
         >
 
-          <span className="text-lg leading-none">
+          <span className="text-lg">
             +
           </span>
 
@@ -44,24 +75,83 @@ function Sidebar({
       </div>
 
 
-      {/* Conversations */}
+      {/* Conversation List */}
 
-      <div className="flex-1 overflow-y-auto px-3">
+      <div className="flex-1 overflow-y-auto px-2">
 
         <p className="px-2 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">
-          Recent
+          Conversations
         </p>
 
 
-        <div className="group flex cursor-pointer items-center gap-3 rounded-lg bg-gray-900 px-3 py-2.5">
+        <div className="space-y-1">
 
-          <span className="text-gray-500">
-            ◇
-          </span>
+          {conversations.map(
+            (conversation) => {
 
-          <span className="truncate text-sm text-gray-300">
-            Current conversation
-          </span>
+              const isActive =
+                conversation.id ===
+                activeConversationId;
+
+
+              return (
+
+                <div
+                  key={conversation.id}
+                  className={`group flex items-center gap-2 rounded-lg px-3 py-2 transition ${
+                    isActive
+                      ? "bg-gray-800"
+                      : "hover:bg-gray-900"
+                  }`}
+                >
+
+                  <button
+                    onClick={() =>
+                      onSelectConversation(
+                        conversation.id
+                      )
+                    }
+                    className="min-w-0 flex-1 truncate text-left text-sm text-gray-300"
+                  >
+                    {conversation.title}
+                  </button>
+
+
+                  <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
+
+                    <button
+                      onClick={() =>
+                        handleRename(
+                          conversation
+                        )
+                      }
+                      className="rounded p-1 text-xs text-gray-500 hover:bg-gray-700 hover:text-white"
+                      title="Rename"
+                    >
+                      ✎
+                    </button>
+
+
+                    <button
+                      onClick={() =>
+                        onDeleteConversation(
+                          conversation.id
+                        )
+                      }
+                      className="rounded p-1 text-xs text-gray-500 hover:bg-red-900 hover:text-red-300"
+                      title="Delete"
+                    >
+                      ×
+                    </button>
+
+                  </div>
+
+                </div>
+
+              );
+
+            }
+          )}
 
         </div>
 
@@ -72,17 +162,9 @@ function Sidebar({
 
       <div className="border-t border-gray-800 p-3">
 
-        <div className="rounded-lg px-3 py-2">
-
-          <p className="text-xs font-medium text-gray-400">
-            AI Software Engineer
-          </p>
-
-          <p className="mt-1 text-[11px] text-gray-600">
-            v1.0
-          </p>
-
-        </div>
+        <p className="text-[11px] text-gray-600">
+          Conversations are stored locally.
+        </p>
 
       </div>
 

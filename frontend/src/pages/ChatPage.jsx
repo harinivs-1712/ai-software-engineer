@@ -15,13 +15,11 @@ import {
 import {
   createConversation,
   initializeConversations,
-} from "../utils/conversation";
+} from "../utils/conversations";
 
 
 function ChatPage() {
 
-  const [messages, setMessages] =
-    useState([]);
 
   const [conversations, setConversations] =
     useState(() => {
@@ -36,16 +34,7 @@ function ChatPage() {
 
 
   const [activeConversationId, setActiveConversationId] =
-    useState(null);
-
-
-  useEffect(() => {
-
-    setActiveConversationId(
-      conversations[0]?.id ?? null
-    );
-
-  }, []);
+    useState(() => conversations[0]?.id ?? null);
 
   useEffect(() => {
 
@@ -62,6 +51,8 @@ function ChatPage() {
         activeConversationId
     );
 
+  const messages = activeConversation?.messages ?? [];
+
   const [input, setInput] =
     useState("");
 
@@ -75,13 +66,82 @@ function ChatPage() {
   const abortControllerRef =
     useRef(null);
 
+  const updateConversation = (
+  conversationId,
+  updates
+) => {
+
+  setConversations(
+    (previousConversations) => {
+
+      const updated =
+        previousConversations.map(
+          (conversation) => {
+
+            if (
+              conversation.id !==
+              conversationId
+            ) {
+              return conversation;
+            }
+
+
+            return {
+              ...conversation,
+              ...updates,
+              updatedAt:
+                new Date().toISOString(),
+            };
+
+          }
+        );
+
+
+      return updated.sort(
+        (a, b) =>
+          new Date(b.updatedAt) -
+          new Date(a.updatedAt)
+      );
+
+    }
+  );
+
+};
+
   const isFirstMessage =
-    activeConversation.messages.length === 0;
+    !activeConversation || activeConversation.messages.length === 0;
 
 
   const handleSuggestion = (suggestion) => {
     setInput(suggestion);
   };
+
+  useEffect(() => {
+
+    if (conversations.length === 0) {
+
+      const conversation =
+        createConversation();
+
+
+      setConversations([
+        conversation
+      ]);
+
+
+      setActiveConversationId(
+        conversation.id
+      );
+
+      return;
+    }
+
+
+    setActiveConversationId(
+      conversations[0].id
+    );
+
+  }, []);
 
 
   const handleSubmit = async (event) => {
@@ -137,12 +197,14 @@ function ChatPage() {
       );
     };
 
+    const isFirstMessage =
+      activeConversation.messages.length === 0;
+
     const userMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: currentMessage,
     };
-
 
     const assistantMessage = {
       id: crypto.randomUUID(),
@@ -150,34 +212,11 @@ function ChatPage() {
       content: "",
     };
 
-
     const updatedMessages = [
       ...activeConversation.messages,
       userMessage,
       assistantMessage,
     ];
-
-
-    updateConversation(
-      activeConversation.id,
-      {
-        messages: updatedMessages,
-      }
-    );
-
-
-    setInput("");
-
-    setLoading(true);
-
-
-    const controller =
-      new AbortController();
-
-
-    abortControllerRef.current =
-      controller;
-
 
     if (isFirstMessage) {
 
@@ -202,6 +241,18 @@ function ChatPage() {
       );
 
     }
+
+    setInput("");
+
+    setLoading(true);
+
+
+    const controller =
+      new AbortController();
+
+
+    abortControllerRef.current =
+      controller;
 
 
     try {
@@ -323,106 +374,129 @@ function ChatPage() {
 
   const handleNewChat = () => {
 
-  handleStop();
+    handleStop();
 
 
-  const conversation =
-    createConversation();
+    const conversation =
+      createConversation();
 
 
-  setConversations(
-    (previousConversations) => [
-      conversation,
-      ...previousConversations,
-    ]
-  );
+    setConversations(
+      (previousConversations) => [
+        conversation,
+        ...previousConversations,
+      ]
+    );
 
 
-  setActiveConversationId(
-    conversation.id
-  );
+    setActiveConversationId(
+      conversation.id
+    );
 
 
-  setInput("");
+    setInput("");
 
-  setError(null);
+    setError(null);
 
-};
+  };
 
-const handleSelectConversation = (
-  conversationId
-) => {
-
-  handleStop();
-
-
-  setActiveConversationId(
+  const handleSelectConversation = (
     conversationId
-  );
+  ) => {
+
+    handleStop();
 
 
-  setInput("");
-
-  setError(null);
-
-};
-
-const handleDeleteConversation = (
-  conversationId
-) => {
-
-  handleStop();
+    setActiveConversationId(
+      conversationId
+    );
 
 
-  setConversations(
-    (previousConversations) =>
-      previousConversations.filter(
-        (conversation) =>
-          conversation.id !==
-          conversationId
-      )
-  );
+    setInput("");
+
+    setError(null);
+
+  };
+
+  const handleDeleteConversation = (
+    conversationId
+  ) => {
+
+    handleStop();
 
 
-  if (
-    conversationId ===
-    activeConversationId
-  ) {
-
-    const remaining =
-      conversations.filter(
-        (conversation) =>
-          conversation.id !==
-          conversationId
-      );
+    setConversations(
+      (previousConversations) =>
+        previousConversations.filter(
+          (conversation) =>
+            conversation.id !==
+            conversationId
+        )
+    );
 
 
-    if (remaining.length > 0) {
+    if (
+      conversationId ===
+      activeConversationId
+    ) {
 
-      setActiveConversationId(
-        remaining[0].id
-      );
-
-    } else {
-
-      const newConversation =
-        createConversation();
-
-
-      setConversations([
-        newConversation
-      ]);
+      const remaining =
+        conversations.filter(
+          (conversation) =>
+            conversation.id !==
+            conversationId
+        );
 
 
-      setActiveConversationId(
-        newConversation.id
-      );
+      if (remaining.length > 0) {
+
+        setActiveConversationId(
+          remaining[0].id
+        );
+
+      } else {
+
+        const newConversation =
+          createConversation();
+
+
+        setConversations([
+          newConversation
+        ]);
+
+
+        setActiveConversationId(
+          newConversation.id
+        );
+
+      }
 
     }
 
-  }
+  };
 
-};
+  const handleRenameConversation = (
+    conversationId,
+    newTitle
+  ) => {
+
+    const title =
+      newTitle.trim();
+
+
+    if (!title) {
+      return;
+    }
+
+
+    updateConversation(
+      conversationId,
+      {
+        title,
+      }
+    );
+
+  };
 
 
   const handleRetry = () => {
@@ -459,7 +533,20 @@ const handleDeleteConversation = (
     <div className="flex h-screen overflow-hidden bg-gray-950 text-white">
 
       <Sidebar
+        conversations={conversations}
+        activeConversationId={
+          activeConversationId
+        }
         onNewChat={handleNewChat}
+        onSelectConversation={
+          handleSelectConversation
+        }
+        onDeleteConversation={
+          handleDeleteConversation
+        }
+        onRenameConversation={
+          handleRenameConversation
+        }
       />
 
 
