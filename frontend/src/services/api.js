@@ -5,6 +5,7 @@ export async function streamMessage(
   conversationId,
   message,
   history,
+  mode,
   onChunk,
   signal
 ) {
@@ -22,6 +23,7 @@ export async function streamMessage(
         conversation_id: conversationId,
         message,
         history,
+        mode: mode || "generate",
       }),
 
       signal,

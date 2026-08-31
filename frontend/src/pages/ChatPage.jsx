@@ -4,7 +4,7 @@ import Navbar from "../components/Navbar";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
 import InputBox from "../components/InputBox";
-
+import ModeSelector from "../components/ModeSelector";
 import { streamMessage } from "../services/api";
 import { getErrorMessage } from "../utils/errorHandler";
 import {
@@ -53,6 +53,9 @@ function ChatPage() {
 
   const messages = activeConversation?.messages ?? [];
 
+  const [selectedMode, setSelectedMode] =
+    useState("generate");
+
   const [input, setInput] =
     useState("");
 
@@ -67,46 +70,46 @@ function ChatPage() {
     useRef(null);
 
   const updateConversation = (
-  conversationId,
-  updates
-) => {
+    conversationId,
+    updates
+  ) => {
 
-  setConversations(
-    (previousConversations) => {
+    setConversations(
+      (previousConversations) => {
 
-      const updated =
-        previousConversations.map(
-          (conversation) => {
+        const updated =
+          previousConversations.map(
+            (conversation) => {
 
-            if (
-              conversation.id !==
-              conversationId
-            ) {
-              return conversation;
+              if (
+                conversation.id !==
+                conversationId
+              ) {
+                return conversation;
+              }
+
+
+              return {
+                ...conversation,
+                ...updates,
+                updatedAt:
+                  new Date().toISOString(),
+              };
+
             }
+          );
 
 
-            return {
-              ...conversation,
-              ...updates,
-              updatedAt:
-                new Date().toISOString(),
-            };
-
-          }
+        return updated.sort(
+          (a, b) =>
+            new Date(b.updatedAt) -
+            new Date(a.updatedAt)
         );
 
+      }
+    );
 
-      return updated.sort(
-        (a, b) =>
-          new Date(b.updatedAt) -
-          new Date(a.updatedAt)
-      );
-
-    }
-  );
-
-};
+  };
 
   const isFirstMessage =
     !activeConversation || activeConversation.messages.length === 0;
@@ -204,12 +207,14 @@ function ChatPage() {
       id: crypto.randomUUID(),
       role: "user",
       content: currentMessage,
+      mode: selectedMode,
     };
 
     const assistantMessage = {
       id: crypto.randomUUID(),
       role: "assistant",
       content: "",
+      mode: selectedMode,
     };
 
     const updatedMessages = [
@@ -261,7 +266,7 @@ function ChatPage() {
         activeConversation.id,
         currentMessage,
         history,
-
+        selectedMode,
         (chunk) => {
 
           setConversations(
@@ -586,7 +591,10 @@ function ChatPage() {
 
         )}
 
-
+        <ModeSelector
+          selectedMode={selectedMode}
+          onModeChange={setSelectedMode}
+        />
         <InputBox
           value={input}
           onChange={setInput}

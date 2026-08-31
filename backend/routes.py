@@ -38,7 +38,8 @@ def chat_stream(request: ChatRequest):
         return StreamingResponse(
             generate_response_stream(
                 request.message,
-                request.history
+                request.history,
+                request.mode
             ),
             media_type="text/plain"
         )

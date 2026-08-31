@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = Field(
         default_factory=list
     )
+    mode: str = "generate"
 
 
 class ChatResponse(BaseModel):

@@ -1,3 +1,4 @@
+
 from collections.abc import Iterator
 
 from google import genai
@@ -5,7 +6,9 @@ from google.genai import types
 
 from config import GEMINI_API_KEY, MODEL_NAME
 
-from prompts.software_engineer import SYSTEM_PROMPT
+from services.prompt_manager import (
+    get_system_prompt
+)
 
 
 if not GEMINI_API_KEY:
@@ -17,7 +20,6 @@ if not GEMINI_API_KEY:
 client = genai.Client(
     api_key=GEMINI_API_KEY
 )
-
 
 
 def build_contents(history, message):
@@ -63,11 +65,17 @@ def build_contents(history, message):
 def generate_response_stream(
     message: str,
     history,
+    mode: str,
 ) -> Iterator[str]:
 
     contents = build_contents(
         history,
         message
+    )
+
+
+    system_prompt = get_system_prompt(
+        mode
     )
 
 
@@ -78,7 +86,7 @@ def generate_response_stream(
             contents=contents,
 
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT
+                system_instruction=system_prompt
             )
         )
     )
@@ -88,3 +96,4 @@ def generate_response_stream(
 
         if chunk.text:
             yield chunk.text
+
