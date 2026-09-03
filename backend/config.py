@@ -29,3 +29,10 @@ MODEL_NAME = os.getenv(
     "MODEL_NAME",
     "gemini-3.6-flash"
 )
+
+import os
+
+JWT_SECRET_KEY = os.getenv(
+    "JWT_SECRET_KEY",
+    "development-secret-key-change-this",
+)

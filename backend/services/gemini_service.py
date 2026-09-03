@@ -66,11 +66,37 @@ def generate_response_stream(
     message: str,
     history,
     mode: str,
+    project_context: str = "",
 ) -> Iterator[str]:
+
+    final_message = message
+
+    if project_context:
+
+        final_message = f"""
+You are working with the user's uploaded software project.
+
+Use the project context below when answering the user's question.
+
+PROJECT CONTEXT:
+
+{project_context}
+
+USER QUESTION:
+
+{message}
+
+Instructions:
+
+- Use the provided project context when relevant.
+- Do not assume files or code that were not provided.
+- Clearly identify relevant files when discussing the project.
+- If the available project context is insufficient, say so.
+"""
 
     contents = build_contents(
         history,
-        message
+        final_message
     )
 
 

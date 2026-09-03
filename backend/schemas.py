@@ -13,6 +13,7 @@ class ChatRequest(BaseModel):
         default_factory=list
     )
     mode: str = "generate"
+    project_id: str | None = None
 
 
 class ChatResponse(BaseModel):

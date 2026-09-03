@@ -6,6 +6,7 @@ export async function streamMessage(
   message,
   history,
   mode,
+  projectId,
   onChunk,
   signal
 ) {
@@ -24,6 +25,7 @@ export async function streamMessage(
         message,
         history,
         mode: mode || "generate",
+        project_id: projectId || null,
       }),
 
       signal,
@@ -103,4 +105,58 @@ export async function streamMessage(
 
     }
   }
+}
+
+
+export async function uploadFile(
+  file
+) {
+
+  const formData =
+    new FormData();
+
+
+  formData.append(
+    "file",
+    file
+  );
+
+
+  const response =
+    await fetch(
+      `${API_BASE_URL}/upload`,
+      {
+        method: "POST",
+
+        body: formData,
+      }
+    );
+
+
+  if (!response.ok) {
+
+    let message =
+      "File upload failed.";
+
+    try {
+
+      const error =
+        await response.json();
+
+      message =
+        error.detail ||
+        message;
+
+    } catch {
+      // Ignore JSON parsing errors.
+    }
+
+
+    throw new Error(
+      message
+    );
+  }
+
+
+  return response.json();
 }

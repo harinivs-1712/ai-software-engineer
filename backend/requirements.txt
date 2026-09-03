@@ -4,3 +4,7 @@ python-dotenv
 router
 google-genai
 pydantic
+python-multipart
+sqlalchemy
+passlib[bcrypt]
+python-jose[cryptography]

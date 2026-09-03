@@ -5,8 +5,16 @@ import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
 import InputBox from "../components/InputBox";
 import ModeSelector from "../components/ModeSelector";
-import { streamMessage } from "../services/api";
+import FilePreview from "../components/FilePreview";
+import FileUpload from "../components/FileUpload";
+
+import {
+  streamMessage,
+  uploadFile,
+} from "../services/api";
+
 import { getErrorMessage } from "../utils/errorHandler";
+
 import {
   loadConversations,
   saveConversations,
@@ -14,13 +22,20 @@ import {
 
 import {
   createConversation,
-  initializeConversations,
 } from "../utils/conversations";
+
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:8000";
 
 
 function ChatPage() {
 
-
+  /* -------------------------------------------------
+     CONVERSATIONS
+  ------------------------------------------------- */
+  const [projectId, setProjectId] = useState(null);
   const [conversations, setConversations] =
     useState(() => {
 
@@ -34,7 +49,70 @@ function ChatPage() {
 
 
   const [activeConversationId, setActiveConversationId] =
-    useState(() => conversations[0]?.id ?? null);
+    useState(() =>
+      conversations[0]?.id ?? null
+    );
+
+
+  const activeConversation =
+    conversations.find(
+      (conversation) =>
+        conversation.id ===
+        activeConversationId
+    );
+
+
+  const messages =
+    activeConversation?.messages ?? [];
+
+
+  /* -------------------------------------------------
+     CHAT STATE
+  ------------------------------------------------- */
+
+  const [selectedMode, setSelectedMode] =
+    useState("generate");
+
+
+  const [input, setInput] =
+    useState("");
+
+
+  const [loading, setLoading] =
+    useState(false);
+
+
+  const [error, setError] =
+    useState(null);
+
+
+  /* -------------------------------------------------
+     FILE STATE
+  ------------------------------------------------- */
+
+  const [uploadedFile, setUploadedFile] =
+    useState(null);
+
+
+  const [uploading, setUploading] =
+    useState(false);
+
+
+  const projectInputRef =
+    useRef(null);
+
+
+  /* -------------------------------------------------
+     ABORT CONTROLLER
+  ------------------------------------------------- */
+
+  const abortControllerRef =
+    useRef(null);
+
+
+  /* -------------------------------------------------
+     SAVE CONVERSATIONS
+  ------------------------------------------------- */
 
   useEffect(() => {
 
@@ -44,30 +122,55 @@ function ChatPage() {
 
   }, [conversations]);
 
-  const activeConversation =
-    conversations.find(
-      (conversation) =>
-        conversation.id ===
-        activeConversationId
-    );
 
-  const messages = activeConversation?.messages ?? [];
+  /* -------------------------------------------------
+     ENSURE ACTIVE CONVERSATION
+  ------------------------------------------------- */
 
-  const [selectedMode, setSelectedMode] =
-    useState("generate");
+  useEffect(() => {
 
-  const [input, setInput] =
-    useState("");
+    if (conversations.length === 0) {
 
-  const [loading, setLoading] =
-    useState(false);
-
-  const [error, setError] =
-    useState(null);
+      const conversation =
+        createConversation();
 
 
-  const abortControllerRef =
-    useRef(null);
+      setConversations([
+        conversation,
+      ]);
+
+
+      setActiveConversationId(
+        conversation.id
+      );
+
+      return;
+    }
+
+
+    if (
+      !activeConversationId ||
+      !conversations.some(
+        (conversation) =>
+          conversation.id ===
+          activeConversationId
+      )
+    ) {
+
+      setActiveConversationId(
+        conversations[0].id
+      );
+    }
+
+  }, [
+    conversations,
+    activeConversationId,
+  ]);
+
+
+  /* -------------------------------------------------
+     UPDATE CONVERSATION
+  ------------------------------------------------- */
 
   const updateConversation = (
     conversationId,
@@ -85,6 +188,7 @@ function ChatPage() {
                 conversation.id !==
                 conversationId
               ) {
+
                 return conversation;
               }
 
@@ -95,7 +199,6 @@ function ChatPage() {
                 updatedAt:
                   new Date().toISOString(),
               };
-
             }
           );
 
@@ -105,49 +208,207 @@ function ChatPage() {
             new Date(b.updatedAt) -
             new Date(a.updatedAt)
         );
-
       }
     );
-
   };
 
-  const isFirstMessage =
-    !activeConversation || activeConversation.messages.length === 0;
 
+  /* -------------------------------------------------
+     SUGGESTIONS
+  ------------------------------------------------- */
 
-  const handleSuggestion = (suggestion) => {
+  const handleSuggestion = (
+    suggestion
+  ) => {
+
     setInput(suggestion);
   };
 
-  useEffect(() => {
 
-    if (conversations.length === 0) {
+  /* -------------------------------------------------
+     FILE UPLOAD
+  ------------------------------------------------- */
 
-      const conversation =
-        createConversation();
+  const handleFileSelected = async (
+    file
+  ) => {
 
-
-      setConversations([
-        conversation
-      ]);
-
-
-      setActiveConversationId(
-        conversation.id
-      );
-
+    if (!file) {
       return;
     }
 
 
-    setActiveConversationId(
-      conversations[0].id
-    );
-
-  }, []);
+    setUploading(true);
+    setError(null);
 
 
-  const handleSubmit = async (event) => {
+    try {
+
+      const result =
+        await uploadFile(file);
+        setProjectId(result.project_id);
+
+
+      setUploadedFile(result);
+
+    } catch (error) {
+
+      setError(
+        error.message ||
+        "Failed to upload file."
+      );
+
+    } finally {
+
+      setUploading(false);
+    }
+  };
+
+
+  /* -------------------------------------------------
+     REMOVE FILE
+  ------------------------------------------------- */
+
+  const handleRemoveFile = () => {
+
+    setUploadedFile(null);
+    setProjectId(null);
+    if (projectInputRef.current) {
+      projectInputRef.current.value = "";
+    }
+    setError(null);
+  };
+
+
+  /* -------------------------------------------------
+     PROJECT ZIP UPLOAD
+  ------------------------------------------------- */
+
+  const handleProjectButtonClick = () => {
+
+    if (
+      loading ||
+      uploading
+    ) {
+      return;
+    }
+
+
+    projectInputRef.current?.click();
+  };
+
+
+  const handleProjectSelected = async (
+    event
+  ) => {
+
+    const file =
+      event.target.files?.[0];
+
+
+    if (!file) {
+      return;
+    }
+
+
+    setUploading(true);
+    setError(null);
+
+
+    try {
+
+      const formData =
+        new FormData();
+
+
+      formData.append(
+        "file",
+        file
+      );
+
+
+      const response =
+        await fetch(
+          `${API_BASE_URL}/upload/project`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+
+
+      if (!response.ok) {
+
+        let message =
+          "Project upload failed.";
+
+
+        try {
+
+          const error =
+            await response.json();
+
+
+          message =
+            error.detail ||
+            message;
+
+        } catch {
+          // Ignore JSON parsing errors.
+        }
+
+
+        throw new Error(
+          message
+        );
+      }
+
+
+      const result =
+        await response.json();
+
+
+      setProjectId(result.project_id);
+      setUploadedFile({
+        filename: file.name,
+        name: file.name,
+        extension: ".zip",
+        size: file.size,
+        content: `📦 Project ZIP archive containing ${result.file_count} files.\nReady for codebase context and analysis.`,
+        project_id: result.project_id,
+        file_count: result.file_count,
+      });
+
+      setError(null);
+
+    } catch (error) {
+
+      setError(
+        error.message ||
+        "Project upload failed."
+      );
+
+    } finally {
+
+      setUploading(false);
+
+      /*
+        Allow the user to select
+        the same ZIP file again.
+      */
+
+      event.target.value = "";
+    }
+  };
+
+
+  /* -------------------------------------------------
+     SUBMIT MESSAGE
+  ------------------------------------------------- */
+
+  const handleSubmit = async (
+    event
+  ) => {
 
     event.preventDefault();
 
@@ -157,6 +418,7 @@ function ChatPage() {
       loading ||
       !activeConversation
     ) {
+
       return;
     }
 
@@ -174,10 +436,17 @@ function ChatPage() {
           (message) =>
             message.content.trim() !== ""
         )
-        .map((message) => ({
-          role: message.role,
-          content: message.content,
-        }));
+        .map(
+          (message) => ({
+            role: message.role,
+            content: message.content,
+          })
+        );
+
+
+    /* ---------------------------------------------
+       GENERATE CONVERSATION TITLE
+    --------------------------------------------- */
 
     const generateConversationTitle = (
       message
@@ -189,7 +458,10 @@ function ChatPage() {
           .trim();
 
 
-      if (cleaned.length <= 35) {
+      if (
+        cleaned.length <= 35
+      ) {
+
         return cleaned;
       }
 
@@ -200,8 +472,14 @@ function ChatPage() {
       );
     };
 
+
     const isFirstMessage =
       activeConversation.messages.length === 0;
+
+
+    /* ---------------------------------------------
+       USER MESSAGE
+    --------------------------------------------- */
 
     const userMessage = {
       id: crypto.randomUUID(),
@@ -210,6 +488,11 @@ function ChatPage() {
       mode: selectedMode,
     };
 
+
+    /* ---------------------------------------------
+       ASSISTANT MESSAGE
+    --------------------------------------------- */
+
     const assistantMessage = {
       id: crypto.randomUUID(),
       role: "assistant",
@@ -217,11 +500,17 @@ function ChatPage() {
       mode: selectedMode,
     };
 
+
     const updatedMessages = [
       ...activeConversation.messages,
       userMessage,
       assistantMessage,
     ];
+
+
+    /* ---------------------------------------------
+       SAVE MESSAGE
+    --------------------------------------------- */
 
     if (isFirstMessage) {
 
@@ -232,7 +521,8 @@ function ChatPage() {
             generateConversationTitle(
               currentMessage
             ),
-          messages: updatedMessages,
+          messages:
+            updatedMessages,
         }
       );
 
@@ -241,14 +531,14 @@ function ChatPage() {
       updateConversation(
         activeConversation.id,
         {
-          messages: updatedMessages,
+          messages:
+            updatedMessages,
         }
       );
-
     }
 
-    setInput("");
 
+    setInput("");
     setLoading(true);
 
 
@@ -260,6 +550,10 @@ function ChatPage() {
       controller;
 
 
+    /* ---------------------------------------------
+       STREAM RESPONSE
+    --------------------------------------------- */
+
     try {
 
       await streamMessage(
@@ -267,6 +561,8 @@ function ChatPage() {
         currentMessage,
         history,
         selectedMode,
+        projectId,
+
         (chunk) => {
 
           setConversations(
@@ -278,6 +574,7 @@ function ChatPage() {
                     conversation.id !==
                     activeConversation.id
                   ) {
+
                     return conversation;
                   }
 
@@ -293,6 +590,7 @@ function ChatPage() {
                             message.id !==
                             assistantMessage.id
                           ) {
+
                             return message;
                           }
 
@@ -304,23 +602,19 @@ function ChatPage() {
                               message.content +
                               chunk,
                           };
-
                         }
                       ),
 
                     updatedAt:
                       new Date().toISOString(),
                   };
-
                 }
               )
           );
-
         },
 
         controller.signal
       );
-
 
     } catch (error) {
 
@@ -340,7 +634,6 @@ function ChatPage() {
 
 
         setError(message);
-
       }
 
     } finally {
@@ -349,11 +642,13 @@ function ChatPage() {
 
       abortControllerRef.current =
         null;
-
     }
   };
 
 
+  /* -------------------------------------------------
+     STOP GENERATION
+  ------------------------------------------------- */
 
   const handleStop = () => {
 
@@ -362,20 +657,41 @@ function ChatPage() {
     ) {
 
       abortControllerRef.current.abort();
-
     }
-
   };
+
+
+  /* -------------------------------------------------
+     CLEAR CURRENT CHAT
+  ------------------------------------------------- */
 
   const clearChat = () => {
 
-    setMessages([]);
+    if (!activeConversation) {
+      return;
+    }
+
+
+    handleStop();
+
+
+    updateConversation(
+      activeConversation.id,
+      {
+        messages: [],
+      }
+    );
+
 
     setInput("");
-
     setError(null);
+    setUploadedFile(null);
   };
 
+
+  /* -------------------------------------------------
+     NEW CHAT
+  ------------------------------------------------- */
 
   const handleNewChat = () => {
 
@@ -400,10 +716,14 @@ function ChatPage() {
 
 
     setInput("");
-
     setError(null);
-
+    setUploadedFile(null);
   };
+
+
+  /* -------------------------------------------------
+     SELECT CONVERSATION
+  ------------------------------------------------- */
 
   const handleSelectConversation = (
     conversationId
@@ -418,10 +738,14 @@ function ChatPage() {
 
 
     setInput("");
-
     setError(null);
-
+    setUploadedFile(null);
   };
+
+
+  /* -------------------------------------------------
+     DELETE CONVERSATION
+  ------------------------------------------------- */
 
   const handleDeleteConversation = (
     conversationId
@@ -430,14 +754,12 @@ function ChatPage() {
     handleStop();
 
 
-    setConversations(
-      (previousConversations) =>
-        previousConversations.filter(
-          (conversation) =>
-            conversation.id !==
-            conversationId
-        )
-    );
+    const remaining =
+      conversations.filter(
+        (conversation) =>
+          conversation.id !==
+          conversationId
+      );
 
 
     if (
@@ -445,15 +767,9 @@ function ChatPage() {
       activeConversationId
     ) {
 
-      const remaining =
-        conversations.filter(
-          (conversation) =>
-            conversation.id !==
-            conversationId
-        );
-
-
-      if (remaining.length > 0) {
+      if (
+        remaining.length > 0
+      ) {
 
         setActiveConversationId(
           remaining[0].id
@@ -466,19 +782,32 @@ function ChatPage() {
 
 
         setConversations([
-          newConversation
+          newConversation,
         ]);
 
 
         setActiveConversationId(
           newConversation.id
         );
-
       }
 
+    } else {
+
+      setConversations(
+        remaining
+      );
     }
 
+
+    setInput("");
+    setError(null);
+    setUploadedFile(null);
   };
+
+
+  /* -------------------------------------------------
+     RENAME CONVERSATION
+  ------------------------------------------------- */
 
   const handleRenameConversation = (
     conversationId,
@@ -500,9 +829,12 @@ function ChatPage() {
         title,
       }
     );
-
   };
 
+
+  /* -------------------------------------------------
+     RETRY
+  ------------------------------------------------- */
 
   const handleRetry = () => {
 
@@ -529,20 +861,30 @@ function ChatPage() {
       lastUserMessage.content
     );
 
-    setError(null);
 
+    setError(null);
   };
 
+
+  /* -------------------------------------------------
+     RENDER
+  ------------------------------------------------- */
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-950 text-white">
 
+      {/* SIDEBAR */}
+
       <Sidebar
-        conversations={conversations}
+        conversations={
+          conversations
+        }
         activeConversationId={
           activeConversationId
         }
-        onNewChat={handleNewChat}
+        onNewChat={
+          handleNewChat
+        }
         onSelectConversation={
           handleSelectConversation
         }
@@ -555,17 +897,27 @@ function ChatPage() {
       />
 
 
+      {/* MAIN AREA */}
+
       <div className="flex min-w-0 flex-1 flex-col">
+
+        {/* NAVBAR */}
 
         <Navbar />
 
 
+        {/* CHAT */}
+
         <ChatWindow
           messages={messages}
           loading={loading}
-          onSuggestion={handleSuggestion}
+          onSuggestion={
+            handleSuggestion
+          }
         />
 
+
+        {/* ERROR */}
 
         {error && (
 
@@ -573,14 +925,20 @@ function ChatPage() {
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-red-900 bg-red-950/40 px-4 py-3">
 
-              <p className="text-sm text-red-300">
+              <p className="min-w-0 text-sm text-red-300">
                 {error}
               </p>
 
 
               <button
-                onClick={handleRetry}
-                className="shrink-0 rounded-md px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-900"
+                type="button"
+                onClick={
+                  handleRetry
+                }
+                disabled={
+                  loading
+                }
+                className="shrink-0 rounded-md border border-red-800 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-900 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Retry
               </button>
@@ -588,20 +946,176 @@ function ChatPage() {
             </div>
 
           </div>
-
         )}
 
-        <ModeSelector
-          selectedMode={selectedMode}
-          onModeChange={setSelectedMode}
-        />
+
+        {/* -----------------------------------------
+            UPLOADED FILE PREVIEW
+        ----------------------------------------- */}
+
+        {uploadedFile && (
+
+          <div className="mx-auto w-full max-w-4xl px-4 pb-2">
+
+            <FilePreview
+              file={
+                uploadedFile
+              }
+              onRemove={
+                handleRemoveFile
+              }
+            />
+
+          </div>
+        )}
+
+
+        {/* -----------------------------------------
+            TOOLBAR
+        ----------------------------------------- */}
+
+        <div className="mx-auto w-full max-w-4xl px-4 pb-2">
+
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-800 bg-gray-900/60 p-2">
+
+            {/* MODE */}
+
+            <div className="shrink-0">
+
+              <ModeSelector
+                selectedMode={
+                  selectedMode
+                }
+                onModeChange={
+                  setSelectedMode
+                }
+              />
+
+            </div>
+
+
+            {/* DIVIDER */}
+
+            <div className="hidden h-6 w-px bg-gray-800 sm:block" />
+
+
+            {/* FILE UPLOAD */}
+
+            <div className="shrink-0">
+
+              <FileUpload
+                onFileSelected={
+                  handleFileSelected
+                }
+                disabled={
+                  loading ||
+                  uploading
+                }
+              />
+
+            </div>
+
+
+            {/* PROJECT BUTTON */}
+
+            <button
+              type="button"
+              onClick={
+                handleProjectButtonClick
+              }
+              disabled={
+                loading ||
+                uploading
+              }
+              className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-300 transition hover:border-gray-600 hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+
+              <span>
+                📁
+              </span>
+
+              <span>
+                {uploading
+                  ? "Uploading..."
+                  : "Project"}
+              </span>
+
+            </button>
+
+
+            {/* HIDDEN ZIP INPUT */}
+
+            <input
+              ref={
+                projectInputRef
+              }
+              type="file"
+              accept=".zip"
+              onChange={
+                handleProjectSelected
+              }
+              className="hidden"
+              disabled={
+                loading ||
+                uploading
+              }
+            />
+
+
+            {/* REMOVE FILE */}
+
+            {uploadedFile && (
+
+              <button
+                type="button"
+                onClick={
+                  handleRemoveFile
+                }
+                disabled={
+                  loading ||
+                  uploading
+                }
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-400 transition hover:border-gray-600 hover:bg-gray-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+
+                <span>
+                  ×
+                </span>
+
+                <span>
+                  Remove
+                </span>
+
+              </button>
+
+            )}
+
+          </div>
+
+        </div>
+
+
+        {/* -----------------------------------------
+            INPUT BOX
+        ----------------------------------------- */}
+
         <InputBox
           value={input}
-          onChange={setInput}
-          onSubmit={handleSubmit}
-          onStop={handleStop}
-          disabled={loading}
-          loading={loading}
+          onChange={
+            setInput
+          }
+          onSubmit={
+            handleSubmit
+          }
+          onStop={
+            handleStop
+          }
+          disabled={
+            loading
+          }
+          loading={
+            loading
+          }
         />
 
       </div>
