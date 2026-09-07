@@ -1,11 +1,14 @@
+from datetime import datetime
 import uuid
 from fastapi import Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from database import get_db
-from models.user import User
-
+from models import User, Conversation, Message, Project, ProjectFile
+from services.ownership_service import (
+    get_user_conversation,
+    get_user_project,
+)
 from services.auth_service import (
     hash_password,
     verify_password,
@@ -19,8 +22,15 @@ from fastapi import (
     HTTPException,
 )
 from fastapi.responses import StreamingResponse
+from pathlib import Path
 
-from schemas import ChatRequest, ChatResponse
+from schemas import (
+    ChatRequest,
+    ChatResponse,
+    ConversationCreate,
+    ConversationRename,
+    MessageCreate,
+)
 
 from services.gemini_service import (
     generate_response_stream,
@@ -29,7 +39,10 @@ from services.gemini_service import (
 from services.project_service import (
     extract_project,
     read_project_files,
+    MAX_PROJECT_SIZE,
 )
+
+from services.project_storage_service import create_project
 
 from services.project_analyzer import (
     analyze_project,
@@ -54,6 +67,21 @@ router = APIRouter()
 # This will be replaced by database/storage
 # in a later phase.
 PROJECT_STORAGE = {}
+
+
+def get_conversation_history(
+    db: Session,
+    conversation_id: int,
+):
+
+    return (
+        db.query(Message)
+        .filter(
+            Message.conversation_id == conversation_id
+        )
+        .order_by(Message.id.asc())
+        .all()
+    )
 
 
 class RegisterRequest(BaseModel):
@@ -88,90 +116,156 @@ def api_info():
 
 
 @router.post("/chat/stream")
-def chat_stream(request: ChatRequest):
+async def chat_stream(
+    data: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+
+    if data.conversation_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="conversation_id is required.",
+        )
 
     try:
+        conversation_id = int(data.conversation_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="conversation_id must be an integer.",
+        )
 
-        project_context = ""
+    conversation = get_user_conversation(
+        db,
+        conversation_id,
+        current_user.id,
+    )
 
-        # --------------------------------
-        # Build project context if a
-        # project has been selected
-        # --------------------------------
+    previous_messages = get_conversation_history(
+        db,
+        conversation.id,
+    )
 
-        if request.project_id:
+    user_message = Message(
+        role="user",
+        content=data.message,
+        mode=data.mode,
+        conversation_id=conversation.id,
+    )
 
-            project_content = PROJECT_STORAGE.get(
-                request.project_id
+    db.add(user_message)
+    conversation.updated_at = datetime.utcnow()
+    db.commit()
+
+    project_context = ""
+
+    # --------------------------------
+    # Build project context from database or memory
+    # --------------------------------
+
+    if data.project_id:
+        try:
+            p_id = int(data.project_id)
+            project = get_user_project(
+                db,
+                p_id,
+                current_user.id,
             )
 
-            if project_content:
+            db_files = (
+                db.query(ProjectFile)
+                .filter(ProjectFile.project_id == project.id)
+                .all()
+            )
 
+            if db_files:
+                project_files = [
+                    {"path": f.path, "content": f.content}
+                    for f in db_files
+                ]
+                project_context = build_project_context(
+                    project_files,
+                    data.message,
+                )
+        except (ValueError, TypeError):
+            pass
+
+        if not project_context:
+            project_content = PROJECT_STORAGE.get(
+                str(data.project_id)
+            ) or PROJECT_STORAGE.get(data.project_id)
+
+            if project_content:
                 project_files = read_project_files(
                     project_content
                 )
-
                 project_context = build_project_context(
                     project_files,
-                    request.message,
+                    data.message,
                 )
 
-        # --------------------------------
-        # Send message + project context
-        # to Gemini
-        # --------------------------------
+    def response_stream():
+        assistant_response = ""
 
-        return StreamingResponse(
-            generate_response_stream(
-                request.message,
-                request.history,
-                request.mode,
-                project_context,
-            ),
-            media_type="text/plain"
-        )
+        for chunk in generate_response_stream(
+            data.message,
+            previous_messages,
+            data.mode,
+            project_context,
+        ):
+            assistant_response += chunk
+            yield chunk
 
-    except Exception as error:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Failed to stream AI response: "
-                f"{str(error)}"
+        if assistant_response.strip():
+            assistant_message = Message(
+                role="assistant",
+                content=assistant_response,
+                mode=data.mode,
+                conversation_id=conversation.id,
             )
-        )
+            db.add(assistant_message)
+            conversation.updated_at = datetime.utcnow()
+            db.commit()
+
+    return StreamingResponse(
+        response_stream(),
+        media_type="text/plain"
+    )
 
 
-@router.post("/upload/project")
+@router.post("/projects/upload")
 async def upload_project(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
 
     if not file.filename:
 
         raise HTTPException(
             status_code=400,
-            detail="Filename is missing."
+            detail="Filename is missing.",
         )
 
-    if not file.filename.lower().endswith(
-        ".zip"
-    ):
+    if not file.filename.lower().endswith(".zip"):
 
         raise HTTPException(
             status_code=400,
-            detail="Only ZIP files are supported."
+            detail="Only ZIP files are supported.",
         )
 
     file_content = await file.read()
 
-    # --------------------------------
-    # Validate ZIP before storing it
-    # --------------------------------
+    if len(file_content) > MAX_PROJECT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="Project ZIP exceeds the 20 MB limit.",
+        )
 
     try:
 
-        project_files = extract_project(
+        project_files = read_project_files(
             file_content
         )
 
@@ -179,24 +273,30 @@ async def upload_project(
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid ZIP file."
+            detail="Invalid ZIP file.",
         )
 
-    # --------------------------------
-    # Create project ID
-    # --------------------------------
+    if not project_files:
 
-    project_id = str(uuid.uuid4())
+        raise HTTPException(
+            status_code=400,
+            detail="No supported source files found.",
+        )
 
-    # --------------------------------
-    # Store project temporarily
-    # --------------------------------
+    project_name = Path(
+        file.filename
+    ).stem
 
-    PROJECT_STORAGE[project_id] = file_content
+    project = create_project(
+        db=db,
+        user_id=current_user.id,
+        project_name=project_name,
+        files=project_files,
+    )
 
     return {
-        "project_id": project_id,
-        "filename": file.filename,
+        "id": project.id,
+        "name": project.name,
         "file_count": len(project_files),
     }
 
@@ -223,6 +323,12 @@ async def analyze_uploaded_project(
         )
 
     file_content = await file.read()
+
+    if len(file_content) > MAX_PROJECT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="Project ZIP exceeds the 20 MB limit.",
+        )
 
     try:
 
@@ -346,4 +452,333 @@ def get_me(
     return {
         "id": current_user.id,
         "email": current_user.email,
+    }
+    
+    
+@router.post("/conversations")
+def create_conversation(
+    data: ConversationCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+
+    conversation = Conversation(
+        title=data.title,
+        user_id=current_user.id,
+    )
+
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+    }
+    
+    
+@router.get("/conversations")
+def get_conversations(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+
+    conversations = (
+        db.query(Conversation)
+        .filter(
+            Conversation.user_id == current_user.id
+        )
+        .order_by(
+            Conversation.updated_at.desc()
+        )
+        .all()
+    )
+
+    return [
+        {
+            "id": conversation.id,
+            "title": conversation.title,
+            "created_at": conversation.created_at,
+            "updated_at": conversation.updated_at,
+        }
+        for conversation in conversations
+    ]
+    
+@router.get("/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: int,
+    current_user: User = Depends(
+        get_current_user
+    ),
+    db: Session = Depends(get_db),
+):
+
+    conversation = get_user_conversation(
+        db,
+        conversation_id,
+        current_user.id,
+    )
+
+    messages = (
+        db.query(Message)
+        .filter(
+            Message.conversation_id == conversation.id
+        )
+        .order_by(Message.id.asc())
+        .all()
+    )
+
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+        "messages": [
+            {
+                "id": message.id,
+                "role": message.role,
+                "content": message.content,
+                "mode": message.mode,
+            }
+            for message in messages
+        ],
+    }
+    
+@router.post(
+    "/conversations/{conversation_id}/messages"
+)
+def add_message(
+    conversation_id: int,
+    data: MessageCreate,
+    current_user: User = Depends(
+        get_current_user
+    ),
+    db: Session = Depends(get_db),
+):
+
+    conversation = get_user_conversation(
+        db,
+        conversation_id,
+        current_user.id,
+    )
+
+    message = Message(
+        role=data.role,
+        content=data.content,
+        mode=data.mode,
+        conversation_id=conversation.id,
+    )
+
+    db.add(message)
+
+    conversation.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(message)
+
+    return {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "mode": message.mode,
+    }
+    
+@router.patch("/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: int,
+    data: ConversationRename,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+
+    conversation = get_user_conversation(
+        db,
+        conversation_id,
+        current_user.id,
+    )
+
+    if conversation is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    conversation.title = data.title
+    conversation.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(conversation)
+
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "updated_at": conversation.updated_at,
+    }
+    
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+
+    conversation = get_user_conversation(
+        db,
+        conversation_id,
+        current_user.id,
+    )
+
+    if conversation is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    db.delete(conversation)
+    db.commit()
+
+    return {
+        "message": "Conversation deleted successfully."
+    }
+    
+    
+@router.get("/projects")
+def get_projects(
+    current_user: User = Depends(
+        get_current_user
+    ),
+    db: Session = Depends(get_db),
+):
+
+    projects = (
+        db.query(Project)
+        .filter(Project.user_id == current_user.id)
+        .all()
+    )
+
+    return [
+        {
+            "id": project.id,
+            "name": project.name,
+            "file_count": len(project.files),
+            "created_at": project.created_at,
+        }
+        for project in projects
+    ]
+    
+@router.get("/projects/{project_id}")
+def get_project(
+    project_id: int,
+    current_user: User = Depends(
+        get_current_user
+    ),
+    db: Session = Depends(get_db),
+):
+
+    project = get_user_project(
+        db,
+        project_id,
+        current_user.id,
+    )
+
+    if project is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found.",
+        )
+
+    return {
+        "id": project.id,
+        "name": project.name,
+        "file_count": len(project.files),
+        "files": [
+            {
+                "id": file.id,
+                "path": file.path,
+                "content": file.content,
+            }
+            for file in project.files
+        ],
+    }
+    
+@router.get(
+    "/projects/{project_id}/files/{file_id}"
+)
+def get_project_file(
+    project_id: int,
+    file_id: int,
+    current_user: User = Depends(
+        get_current_user
+    ),
+    db: Session = Depends(get_db),
+):
+
+    project = get_user_project(
+        db,
+        project_id,
+        current_user.id,
+    )
+
+    if project is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found.",
+        )
+
+    project_file = (
+        db.query(ProjectFile)
+        .filter(
+            ProjectFile.id == file_id,
+            ProjectFile.project_id == project.id,
+        )
+        .first()
+    )
+
+    if project_file is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="File not found.",
+        )
+
+    return {
+        "id": project_file.id,
+        "path": project_file.path,
+        "content": project_file.content,
+    }
+    
+    
+@router.delete("/projects/{project_id}")
+def delete_project(
+    project_id: int,
+    current_user: User = Depends(
+        get_current_user
+    ),
+    db: Session = Depends(get_db),
+):
+
+    project = get_user_project(
+        db,
+        project_id,
+        current_user.id,
+    )
+
+    if project is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found.",
+        )
+
+    db.delete(project)
+    db.commit()
+
+    return {
+        "message": "Project deleted successfully."
     }

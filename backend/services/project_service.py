@@ -18,6 +18,8 @@ SUPPORTED_EXTENSIONS = {
     ".md",
 }
 
+MAX_PROJECT_SIZE = 20 * 1024 * 1024  # 20 MB
+
 
 def is_supported_project_file(filename: str) -> bool:
     return Path(filename).suffix.lower() in SUPPORTED_EXTENSIONS

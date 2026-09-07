@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from "react";
 
 import Navbar from "../components/Navbar";
@@ -11,18 +12,17 @@ import FileUpload from "../components/FileUpload";
 import {
   streamMessage,
   uploadFile,
+  uploadProject,
+  getProjects,
+  deleteProject,
+  getConversations,
+  getConversation,
+  createConversation,
+  renameConversation,
+  deleteConversation,
 } from "../services/api";
 
 import { getErrorMessage } from "../utils/errorHandler";
-
-import {
-  loadConversations,
-  saveConversations,
-} from "../services/conversationStorage";
-
-import {
-  createConversation,
-} from "../utils/conversations";
 
 
 const API_BASE_URL =
@@ -30,149 +30,302 @@ const API_BASE_URL =
   "http://localhost:8000";
 
 
-function ChatPage() {
+function ChatPage({ user, onLogout }) {
 
-  /* -------------------------------------------------
+  /* =================================================
      CONVERSATIONS
-  ------------------------------------------------- */
-  const [projectId, setProjectId] = useState(null);
+  ================================================= */
+
   const [conversations, setConversations] =
-    useState(() => {
-
-      const stored =
-        loadConversations();
-
-      return stored.length > 0
-        ? stored
-        : [createConversation()];
-    });
-
+    useState([]);
 
   const [activeConversationId, setActiveConversationId] =
-    useState(() =>
-      conversations[0]?.id ?? null
-    );
+    useState(null);
+
+  const [loadingConversations, setLoadingConversations] =
+    useState(true);
 
 
-  const activeConversation =
-    conversations.find(
-      (conversation) =>
-        conversation.id ===
-        activeConversationId
-    );
-
-
-  const messages =
-    activeConversation?.messages ?? [];
-
-
-  /* -------------------------------------------------
+  /* =================================================
      CHAT STATE
-  ------------------------------------------------- */
+  ================================================= */
 
   const [selectedMode, setSelectedMode] =
     useState("generate");
 
-
   const [input, setInput] =
     useState("");
 
-
   const [loading, setLoading] =
     useState(false);
-
 
   const [error, setError] =
     useState(null);
 
 
-  /* -------------------------------------------------
+  /* =================================================
      FILE STATE
-  ------------------------------------------------- */
+  ================================================= */
 
-  const [uploadedFile, setUploadedFile] =
-    useState(null);
+  const [projects, setProjects] = useState([]);
+  const [projectId, setProjectId] = useState(null);
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const projectInputRef = useRef(null);
+
+  /* =================================================
+     LOAD PROJECTS FROM DATABASE
+  ================================================= */
+  const reloadProjects = async () => {
+    try {
+      const data = await getProjects();
+      setProjects(data || []);
+    } catch (err) {
+      console.error("Failed to load projects:", err);
+    }
+  };
+
+  useEffect(() => {
+    reloadProjects();
+  }, []);
 
 
-  const [uploading, setUploading] =
-    useState(false);
-
-
-  const projectInputRef =
-    useRef(null);
-
-
-  /* -------------------------------------------------
+  /* =================================================
      ABORT CONTROLLER
-  ------------------------------------------------- */
+  ================================================= */
 
   const abortControllerRef =
     useRef(null);
 
 
-  /* -------------------------------------------------
-     SAVE CONVERSATIONS
-  ------------------------------------------------- */
+  /* =================================================
+     ACTIVE CONVERSATION
+  ================================================= */
 
-  useEffect(() => {
-
-    saveConversations(
-      conversations
+  const activeConversation =
+    conversations.find(
+      (conversation) =>
+        conversation.id === activeConversationId
     );
 
-  }, [conversations]);
+  const messages =
+    activeConversation?.messages ?? [];
 
 
-  /* -------------------------------------------------
-     ENSURE ACTIVE CONVERSATION
-  ------------------------------------------------- */
+  /* =================================================
+     LOAD CONVERSATIONS FROM DATABASE
+  ================================================= */
 
   useEffect(() => {
 
-    if (conversations.length === 0) {
+    const fetchConversations = async () => {
+
+      try {
+
+        setLoadingConversations(true);
+        setError(null);
+
+        const data =
+          await getConversations();
+
+        /*
+         * The list endpoint may only return
+         * conversation metadata.
+         *
+         * We therefore load the first conversation
+         * separately so that its messages are available.
+         */
+
+        if (!data || data.length === 0) {
+
+          const newConversation =
+            await createConversation("New Chat");
+
+          const fullConversation =
+            await getConversation(
+              newConversation.id
+            );
+
+          setConversations([
+            fullConversation,
+          ]);
+
+          setActiveConversationId(
+            fullConversation.id
+          );
+
+          return;
+        }
+
+
+        /*
+         * Select the newest conversation.
+         */
+
+        const firstConversation =
+          await getConversation(
+            data[0].id
+          );
+
+
+        setConversations([
+          {
+            ...data[0],
+            ...firstConversation,
+          },
+
+          ...data.slice(1),
+        ]);
+
+
+        setActiveConversationId(
+          data[0].id
+        );
+
+      } catch (error) {
+
+        console.error(
+          "Failed to load conversations:",
+          error
+        );
+
+        setError(
+          getErrorMessage(error) ||
+          "Failed to load conversations."
+        );
+
+      } finally {
+
+        setLoadingConversations(false);
+
+      }
+
+    };
+
+
+    fetchConversations();
+
+  }, []);
+
+
+  /* =================================================
+     SELECT CONVERSATION
+  ================================================= */
+
+  const handleSelectConversation = async (
+    conversationId
+  ) => {
+
+    handleStop();
+
+    try {
+
+      setError(null);
 
       const conversation =
-        createConversation();
+        await getConversation(
+          conversationId
+        );
 
 
-      setConversations([
-        conversation,
-      ]);
+      setConversations(
+        (previousConversations) =>
+          previousConversations.map(
+            (item) =>
+              item.id === conversation.id
+                ? {
+                    ...item,
+                    ...conversation,
+                  }
+                : item
+          )
+      );
 
 
       setActiveConversationId(
         conversation.id
       );
 
-      return;
-    }
 
+      setInput("");
+      setUploadedFile(null);
+      setProjectId(null);
 
-    if (
-      !activeConversationId ||
-      !conversations.some(
-        (conversation) =>
-          conversation.id ===
-          activeConversationId
-      )
-    ) {
+    } catch (error) {
 
-      setActiveConversationId(
-        conversations[0].id
+      console.error(
+        "Failed to load conversation:",
+        error
+      );
+
+      setError(
+        getErrorMessage(error) ||
+        "Failed to load conversation."
       );
     }
-
-  }, [
-    conversations,
-    activeConversationId,
-  ]);
+  };
 
 
-  /* -------------------------------------------------
-     UPDATE CONVERSATION
-  ------------------------------------------------- */
+  /* =================================================
+     CREATE NEW CHAT
+  ================================================= */
 
-  const updateConversation = (
+  const handleNewChat = async () => {
+
+    handleStop();
+
+    try {
+
+      setError(null);
+
+      const conversation =
+        await createConversation(
+          "New Chat"
+        );
+
+
+      /*
+       * Add new conversation to the
+       * beginning of the sidebar.
+       */
+
+      setConversations(
+        (previousConversations) => [
+          conversation,
+          ...previousConversations,
+        ]
+      );
+
+
+      setActiveConversationId(
+        conversation.id
+      );
+
+
+      setInput("");
+      setUploadedFile(null);
+      setProjectId(null);
+
+    } catch (error) {
+
+      console.error(
+        "Failed to create conversation:",
+        error
+      );
+
+      setError(
+        getErrorMessage(error) ||
+        "Failed to create conversation."
+      );
+    }
+  };
+
+
+  /* =================================================
+     UPDATE LOCAL CONVERSATION STATE
+  ================================================= */
+
+  const updateConversationState = (
     conversationId,
     updates
   ) => {
@@ -188,7 +341,6 @@ function ChatPage() {
                 conversation.id !==
                 conversationId
               ) {
-
                 return conversation;
               }
 
@@ -196,6 +348,8 @@ function ChatPage() {
               return {
                 ...conversation,
                 ...updates,
+                updated_at:
+                  new Date().toISOString(),
                 updatedAt:
                   new Date().toISOString(),
               };
@@ -203,86 +357,152 @@ function ChatPage() {
           );
 
 
+        /*
+         * Keep most recently updated conversation
+         * at the top.
+         */
+
         return updated.sort(
-          (a, b) =>
-            new Date(b.updatedAt) -
-            new Date(a.updatedAt)
+          (a, b) => {
+
+            const dateA =
+              new Date(
+                a.updated_at ||
+                a.updatedAt ||
+                0
+              );
+
+            const dateB =
+              new Date(
+                b.updated_at ||
+                b.updatedAt ||
+                0
+              );
+
+            return dateB - dateA;
+          }
         );
       }
     );
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
+     GENERATE CONVERSATION TITLE
+  ================================================= */
+
+  const generateConversationTitle = (
+    message
+  ) => {
+
+    const cleaned =
+      message
+        .replace(/\s+/g, " ")
+        .trim();
+
+
+    if (cleaned.length <= 35) {
+      return cleaned;
+    }
+
+
+    return (
+      cleaned.substring(0, 35) +
+      "..."
+    );
+  };
+
+
+  /* =================================================
      SUGGESTIONS
-  ------------------------------------------------- */
+  ================================================= */
 
   const handleSuggestion = (
     suggestion
   ) => {
 
     setInput(suggestion);
+
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
      FILE UPLOAD
-  ------------------------------------------------- */
+  ================================================= */
 
-  const handleFileSelected = async (
-    file
-  ) => {
-
+  const handleFileSelected = async (file) => {
     if (!file) {
       return;
     }
 
-
     setUploading(true);
     setError(null);
 
-
     try {
+      let result;
+      if (file.name.toLowerCase().endsWith(".zip")) {
+        result = await uploadProject(file);
+      } else {
+        result = await uploadFile(file);
+      }
 
-      const result =
-        await uploadFile(file);
-        setProjectId(result.project_id);
-
-
+      const activeId = result.id || result.project_id;
+      setProjectId(activeId);
       setUploadedFile(result);
 
+      await reloadProjects();
     } catch (error) {
-
-      setError(
-        error.message ||
-        "Failed to upload file."
-      );
-
+      console.error("File upload failed:", error);
+      setError(error.message || "Failed to upload file.");
     } finally {
-
       setUploading(false);
     }
   };
 
+  const handleSelectProject = (id) => {
+    if (projectId === id) {
+      setProjectId(null);
+    } else {
+      setProjectId(id);
+    }
+  };
 
-  /* -------------------------------------------------
+  const handleDeleteProject = async (id) => {
+    try {
+      await deleteProject(id);
+      if (projectId === id) {
+        setProjectId(null);
+      }
+      await reloadProjects();
+    } catch (err) {
+      console.error("Failed to delete project:", err);
+      setError(err.message || "Failed to delete project.");
+    }
+  };
+
+
+  /* =================================================
      REMOVE FILE
-  ------------------------------------------------- */
+  ================================================= */
 
   const handleRemoveFile = () => {
 
     setUploadedFile(null);
     setProjectId(null);
+
     if (projectInputRef.current) {
+
       projectInputRef.current.value = "";
+
     }
+
     setError(null);
   };
 
 
-  /* -------------------------------------------------
-     PROJECT ZIP UPLOAD
-  ------------------------------------------------- */
+  /* =================================================
+     PROJECT ZIP BUTTON
+  ================================================= */
 
   const handleProjectButtonClick = () => {
 
@@ -298,113 +518,50 @@ function ChatPage() {
   };
 
 
-  const handleProjectSelected = async (
-    event
-  ) => {
+  /* =================================================
+     PROJECT ZIP UPLOAD
+  ================================================= */
 
-    const file =
-      event.target.files?.[0];
-
-
+  const handleProjectSelected = async (event) => {
+    const file = event.target.files?.[0];
     if (!file) {
       return;
     }
 
-
     setUploading(true);
     setError(null);
 
-
     try {
+      const result = await uploadProject(file);
+      const newId = result.id || result.project_id;
 
-      const formData =
-        new FormData();
-
-
-      formData.append(
-        "file",
-        file
-      );
-
-
-      const response =
-        await fetch(
-          `${API_BASE_URL}/upload/project`,
-          {
-            method: "POST",
-            body: formData,
-          }
-        );
-
-
-      if (!response.ok) {
-
-        let message =
-          "Project upload failed.";
-
-
-        try {
-
-          const error =
-            await response.json();
-
-
-          message =
-            error.detail ||
-            message;
-
-        } catch {
-          // Ignore JSON parsing errors.
-        }
-
-
-        throw new Error(
-          message
-        );
-      }
-
-
-      const result =
-        await response.json();
-
-
-      setProjectId(result.project_id);
+      setProjectId(newId);
       setUploadedFile({
         filename: file.name,
         name: file.name,
         extension: ".zip",
         size: file.size,
         content: `📦 Project ZIP archive containing ${result.file_count} files.\nReady for codebase context and analysis.`,
-        project_id: result.project_id,
+        project_id: newId,
         file_count: result.file_count,
       });
 
+      await reloadProjects();
       setError(null);
-
     } catch (error) {
-
-      setError(
-        error.message ||
-        "Project upload failed."
-      );
-
+      console.error("Project upload failed:", error);
+      setError(error.message || "Project upload failed.");
     } finally {
-
       setUploading(false);
-
-      /*
-        Allow the user to select
-        the same ZIP file again.
-      */
-
       event.target.value = "";
+
     }
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
      SUBMIT MESSAGE
-  ------------------------------------------------- */
+  ================================================= */
 
   const handleSubmit = async (
     event
@@ -418,7 +575,6 @@ function ChatPage() {
       loading ||
       !activeConversation
     ) {
-
       return;
     }
 
@@ -430,10 +586,23 @@ function ChatPage() {
       input.trim();
 
 
+    const conversationId =
+      activeConversation.id;
+
+
+    /*
+     * Save the history that existed BEFORE
+     * the new user message.
+     *
+     * This keeps the request compatible with
+     * the current streamMessage implementation.
+     */
+
     const history =
-      activeConversation.messages
+      (activeConversation.messages || [])
         .filter(
           (message) =>
+            message.content &&
             message.content.trim() !== ""
         )
         .map(
@@ -444,103 +613,140 @@ function ChatPage() {
         );
 
 
-    /* ---------------------------------------------
-       GENERATE CONVERSATION TITLE
-    --------------------------------------------- */
-
-    const generateConversationTitle = (
-      message
-    ) => {
-
-      const cleaned =
-        message
-          .replace(/\s+/g, " ")
-          .trim();
-
-
-      if (
-        cleaned.length <= 35
-      ) {
-
-        return cleaned;
-      }
-
-
-      return (
-        cleaned.substring(0, 35) +
-        "..."
-      );
-    };
-
-
     const isFirstMessage =
-      activeConversation.messages.length === 0;
+      (activeConversation.messages || [])
+        .length === 0;
 
 
-    /* ---------------------------------------------
+    /* =================================================
        USER MESSAGE
-    --------------------------------------------- */
+    ================================================= */
 
     const userMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: currentMessage,
-      mode: selectedMode,
+
+      id:
+        crypto.randomUUID(),
+
+      role:
+        "user",
+
+      content:
+        currentMessage,
+
+      mode:
+        selectedMode,
     };
 
 
-    /* ---------------------------------------------
+    /* =================================================
        ASSISTANT MESSAGE
-    --------------------------------------------- */
+    ================================================= */
 
     const assistantMessage = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: "",
-      mode: selectedMode,
+
+      id:
+        crypto.randomUUID(),
+
+      role:
+        "assistant",
+
+      content:
+        "",
+
+      mode:
+        selectedMode,
     };
 
 
+    /*
+     * Immediately update the UI.
+     */
+
     const updatedMessages = [
-      ...activeConversation.messages,
+
+      ...(activeConversation.messages || []),
+
       userMessage,
+
       assistantMessage,
+
     ];
 
 
-    /* ---------------------------------------------
-       SAVE MESSAGE
-    --------------------------------------------- */
-
-    if (isFirstMessage) {
-
-      updateConversation(
-        activeConversation.id,
-        {
-          title:
-            generateConversationTitle(
-              currentMessage
-            ),
-          messages:
-            updatedMessages,
-        }
-      );
-
-    } else {
-
-      updateConversation(
-        activeConversation.id,
-        {
-          messages:
-            updatedMessages,
-        }
-      );
-    }
+    updateConversationState(
+      conversationId,
+      {
+        messages:
+          updatedMessages,
+      }
+    );
 
 
     setInput("");
     setLoading(true);
 
+
+    /* =================================================
+       USER & ASSISTANT MESSAGES AUTO-SAVED BY BACKEND
+    ================================================= */
+    // Note: /chat/stream automatically saves user_message before streaming 
+    // and saves assistant_message when stream completes.
+
+
+    /* =================================================
+       RENAME FIRST CONVERSATION
+    ================================================= */
+
+    if (isFirstMessage) {
+
+      const newTitle =
+        generateConversationTitle(
+          currentMessage
+        );
+
+
+      try {
+
+        await renameConversation(
+          conversationId,
+          newTitle
+        );
+
+
+        updateConversationState(
+          conversationId,
+          {
+            title:
+              newTitle,
+          }
+        );
+
+      } catch (error) {
+
+        console.error(
+          "Failed to rename conversation:",
+          error
+        );
+
+        /*
+         * Title failure should not stop
+         * the AI response.
+         */
+
+        updateConversationState(
+          conversationId,
+          {
+            title:
+              newTitle,
+          }
+        );
+      }
+    }
+
+
+    /* =================================================
+       STREAM RESPONSE
+    ================================================= */
 
     const controller =
       new AbortController();
@@ -550,20 +756,29 @@ function ChatPage() {
       controller;
 
 
-    /* ---------------------------------------------
-       STREAM RESPONSE
-    --------------------------------------------- */
+    let completeResponse = "";
+
 
     try {
 
       await streamMessage(
-        activeConversation.id,
+        conversationId,
         currentMessage,
-        history,
         selectedMode,
         projectId,
-
         (chunk) => {
+
+          /*
+           * Accumulate the complete
+           * assistant response.
+           */
+
+          completeResponse += chunk;
+
+
+          /*
+           * Update the UI while streaming.
+           */
 
           setConversations(
             (previousConversations) =>
@@ -572,49 +787,61 @@ function ChatPage() {
 
                   if (
                     conversation.id !==
-                    activeConversation.id
+                    conversationId
                   ) {
-
                     return conversation;
                   }
 
 
                   return {
+
                     ...conversation,
 
                     messages:
-                      conversation.messages.map(
-                        (message) => {
+                      (conversation.messages || [])
+                        .map(
+                          (message) => {
 
-                          if (
-                            message.id !==
-                            assistantMessage.id
-                          ) {
+                            if (
+                              message.id !==
+                              assistantMessage.id
+                            ) {
+                              return message;
+                            }
 
-                            return message;
+
+                            return {
+
+                              ...message,
+
+                              content:
+                                completeResponse,
+
+                            };
                           }
+                        ),
 
-
-                          return {
-                            ...message,
-
-                            content:
-                              message.content +
-                              chunk,
-                          };
-                        }
-                      ),
+                    updated_at:
+                      new Date().toISOString(),
 
                     updatedAt:
                       new Date().toISOString(),
+
                   };
+
                 }
               )
           );
+
         },
 
         controller.signal
+
       );
+
+
+      // Backend /chat/stream automatically saves assistant_message on completion
+
 
     } catch (error) {
 
@@ -624,16 +851,21 @@ function ChatPage() {
       ) {
 
         console.log(
-          "Generation stopped."
+          "Generation stopped by user."
         );
 
       } else {
 
-        const message =
-          getErrorMessage(error);
+        console.error(
+          "Streaming failed:",
+          error
+        );
 
 
-        setError(message);
+        setError(
+          getErrorMessage(error)
+        );
+
       }
 
     } finally {
@@ -642,13 +874,14 @@ function ChatPage() {
 
       abortControllerRef.current =
         null;
+
     }
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
      STOP GENERATION
-  ------------------------------------------------- */
+  ================================================= */
 
   const handleStop = () => {
 
@@ -657,15 +890,16 @@ function ChatPage() {
     ) {
 
       abortControllerRef.current.abort();
+
     }
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
      CLEAR CURRENT CHAT
-  ------------------------------------------------- */
+  ================================================= */
 
-  const clearChat = () => {
+  const clearChat = async () => {
 
     if (!activeConversation) {
       return;
@@ -675,7 +909,21 @@ function ChatPage() {
     handleStop();
 
 
-    updateConversation(
+    /*
+     * IMPORTANT:
+     *
+     * Step 5C does not have a "clear messages"
+     * endpoint yet.
+     *
+     * Therefore we only clear the local UI here.
+     *
+     * The database still contains the messages.
+     *
+     * We will handle permanent message clearing
+     * when the conversation/message API is expanded.
+     */
+
+    updateConversationState(
       activeConversation.id,
       {
         messages: [],
@@ -686,130 +934,147 @@ function ChatPage() {
     setInput("");
     setError(null);
     setUploadedFile(null);
+    setProjectId(null);
   };
 
 
-  /* -------------------------------------------------
-     NEW CHAT
-  ------------------------------------------------- */
-
-  const handleNewChat = () => {
-
-    handleStop();
-
-
-    const conversation =
-      createConversation();
-
-
-    setConversations(
-      (previousConversations) => [
-        conversation,
-        ...previousConversations,
-      ]
-    );
-
-
-    setActiveConversationId(
-      conversation.id
-    );
-
-
-    setInput("");
-    setError(null);
-    setUploadedFile(null);
-  };
-
-
-  /* -------------------------------------------------
-     SELECT CONVERSATION
-  ------------------------------------------------- */
-
-  const handleSelectConversation = (
-    conversationId
-  ) => {
-
-    handleStop();
-
-
-    setActiveConversationId(
-      conversationId
-    );
-
-
-    setInput("");
-    setError(null);
-    setUploadedFile(null);
-  };
-
-
-  /* -------------------------------------------------
+  /* =================================================
      DELETE CONVERSATION
-  ------------------------------------------------- */
+  ================================================= */
 
-  const handleDeleteConversation = (
+  const handleDeleteConversation = async (
     conversationId
   ) => {
 
     handleStop();
 
 
-    const remaining =
-      conversations.filter(
-        (conversation) =>
-          conversation.id !==
-          conversationId
+    try {
+
+      setError(null);
+
+
+      /*
+       * Delete from database.
+       */
+
+      await deleteConversation(
+        conversationId
       );
 
 
-    if (
-      conversationId ===
-      activeConversationId
-    ) {
+      /*
+       * Remove from local React state.
+       */
 
-      if (
-        remaining.length > 0
-      ) {
-
-        setActiveConversationId(
-          remaining[0].id
+      const remaining =
+        conversations.filter(
+          (conversation) =>
+            conversation.id !==
+            conversationId
         );
 
-      } else {
-
-        const newConversation =
-          createConversation();
-
-
-        setConversations([
-          newConversation,
-        ]);
-
-
-        setActiveConversationId(
-          newConversation.id
-        );
-      }
-
-    } else {
 
       setConversations(
         remaining
       );
+
+
+      /*
+       * If the deleted conversation
+       * was active, select another one.
+       */
+
+      if (
+        conversationId ===
+        activeConversationId
+      ) {
+
+        if (
+          remaining.length > 0
+        ) {
+
+          /*
+           * Load the newest remaining
+           * conversation completely.
+           */
+
+          const nextConversation =
+            await getConversation(
+              remaining[0].id
+            );
+
+
+          setConversations(
+            (previousConversations) =>
+              previousConversations.map(
+                (conversation) =>
+                  conversation.id ===
+                  nextConversation.id
+                    ? {
+                        ...conversation,
+                        ...nextConversation,
+                      }
+                    : conversation
+              )
+          );
+
+
+          setActiveConversationId(
+            nextConversation.id
+          );
+
+        } else {
+
+          /*
+           * If there are no conversations left,
+           * create a new one in the database.
+           */
+
+          const newConversation =
+            await createConversation(
+              "New Chat"
+            );
+
+
+          setConversations([
+            newConversation,
+          ]);
+
+
+          setActiveConversationId(
+            newConversation.id
+          );
+
+        }
+
+      }
+
+
+      setInput("");
+      setUploadedFile(null);
+      setProjectId(null);
+
+    } catch (error) {
+
+      console.error(
+        "Failed to delete conversation:",
+        error
+      );
+
+      setError(
+        getErrorMessage(error) ||
+        "Failed to delete conversation."
+      );
     }
-
-
-    setInput("");
-    setError(null);
-    setUploadedFile(null);
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
      RENAME CONVERSATION
-  ------------------------------------------------- */
+  ================================================= */
 
-  const handleRenameConversation = (
+  const handleRenameConversation = async (
     conversationId,
     newTitle
   ) => {
@@ -823,18 +1088,97 @@ function ChatPage() {
     }
 
 
-    updateConversation(
-      conversationId,
-      {
-        title,
-      }
-    );
+    try {
+
+      setError(null);
+
+
+      await renameConversation(
+        conversationId,
+        title
+      );
+
+
+      updateConversationState(
+        conversationId,
+        {
+          title,
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Failed to rename conversation:",
+        error
+      );
+
+      setError(
+        getErrorMessage(error) ||
+        "Failed to rename conversation."
+      );
+    }
   };
 
+  const handleProjectUpload = async (
+    event
+  ) => {
 
-  /* -------------------------------------------------
+    const file =
+      event.target.files?.[0];
+
+    if (!file) return;
+
+    try {
+
+      setUploading(true);
+      setError(null);
+
+      const project =
+        await uploadProject(file);
+
+      const newId = project.id || project.project_id;
+
+      if (newId) {
+        setProjectId(newId);
+      }
+
+      setUploadedFile({
+        filename: file.name,
+        name: file.name,
+        extension: ".zip",
+        size: file.size,
+        content: `📦 Project ZIP archive containing ${project.file_count || 0} files.\nReady for codebase context and analysis.`,
+        project_id: newId,
+        file_count: project.file_count,
+      });
+
+      await reloadProjects();
+
+    } catch (error) {
+
+      console.error(
+        "Project upload failed:",
+        error
+      );
+
+      setError(
+        error.message ||
+        "Project upload failed."
+      );
+
+    } finally {
+
+      setUploading(false);
+
+      if (event.target) {
+        event.target.value = "";
+      }
+    }
+  };
+  /* =================================================
      RETRY
-  ------------------------------------------------- */
+  ================================================= */
 
   const handleRetry = () => {
 
@@ -866,58 +1210,71 @@ function ChatPage() {
   };
 
 
-  /* -------------------------------------------------
+  /* =================================================
      RENDER
-  ------------------------------------------------- */
+  ================================================= */
 
   return (
+
     <div className="flex h-screen overflow-hidden bg-gray-950 text-white">
 
-      {/* SIDEBAR */}
+      {/* =================================================
+          SIDEBAR
+      ================================================= */}
 
       <Sidebar
-        conversations={
-          conversations
-        }
-        activeConversationId={
-          activeConversationId
-        }
-        onNewChat={
-          handleNewChat
-        }
-        onSelectConversation={
-          handleSelectConversation
-        }
-        onDeleteConversation={
-          handleDeleteConversation
-        }
-        onRenameConversation={
-          handleRenameConversation
-        }
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onNewChat={handleNewChat}
+        onSelectConversation={handleSelectConversation}
+        onDeleteConversation={handleDeleteConversation}
+        onRenameConversation={handleRenameConversation}
+        projects={projects}
+        activeProjectId={projectId}
+        onSelectProject={handleSelectProject}
+        onDeleteProject={handleDeleteProject}
       />
 
 
-      {/* MAIN AREA */}
+      {/* =================================================
+          MAIN AREA
+      ================================================= */}
 
       <div className="flex min-w-0 flex-1 flex-col">
 
-        {/* NAVBAR */}
 
-        <Navbar />
+        {/* =================================================
+            NAVBAR
+        ================================================= */}
+
+        <Navbar user={user} onLogout={onLogout} />
 
 
-        {/* CHAT */}
+        {/* =================================================
+            CHAT WINDOW
+        ================================================= */}
 
         <ChatWindow
-          messages={messages}
-          loading={loading}
+
+          messages={
+            messages
+          }
+
+          loading={
+            loading ||
+            loadingConversations
+          }
+
           onSuggestion={
             handleSuggestion
           }
+
         />
 
 
-        {/* ERROR */}
+        {/* =================================================
+            ERROR
+        ================================================= */}
 
         {error && (
 
@@ -926,69 +1283,87 @@ function ChatPage() {
             <div className="flex items-center justify-between gap-3 rounded-lg border border-red-900 bg-red-950/40 px-4 py-3">
 
               <p className="min-w-0 text-sm text-red-300">
+
                 {error}
+
               </p>
 
 
               <button
+
                 type="button"
+
                 onClick={
                   handleRetry
                 }
+
                 disabled={
                   loading
                 }
+
                 className="shrink-0 rounded-md border border-red-800 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-900 disabled:cursor-not-allowed disabled:opacity-50"
+
               >
+
                 Retry
+
               </button>
 
             </div>
 
           </div>
+
         )}
 
 
-        {/* -----------------------------------------
+        {/* =================================================
             UPLOADED FILE PREVIEW
-        ----------------------------------------- */}
+        ================================================= */}
 
         {uploadedFile && (
 
           <div className="mx-auto w-full max-w-4xl px-4 pb-2">
 
             <FilePreview
+
               file={
                 uploadedFile
               }
+
               onRemove={
                 handleRemoveFile
               }
+
             />
 
           </div>
+
         )}
 
 
-        {/* -----------------------------------------
+        {/* =================================================
             TOOLBAR
-        ----------------------------------------- */}
+        ================================================= */}
 
         <div className="mx-auto w-full max-w-4xl px-4 pb-2">
 
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-800 bg-gray-900/60 p-2">
+
 
             {/* MODE */}
 
             <div className="shrink-0">
 
               <ModeSelector
+
                 selectedMode={
                   selectedMode
                 }
+
                 onModeChange={
                   setSelectedMode
                 }
+
               />
 
             </div>
@@ -1004,13 +1379,16 @@ function ChatPage() {
             <div className="shrink-0">
 
               <FileUpload
+
                 onFileSelected={
                   handleFileSelected
                 }
+
                 disabled={
                   loading ||
                   uploading
                 }
+
               />
 
             </div>
@@ -1019,15 +1397,20 @@ function ChatPage() {
             {/* PROJECT BUTTON */}
 
             <button
+
               type="button"
+
               onClick={
                 handleProjectButtonClick
               }
+
               disabled={
                 loading ||
                 uploading
               }
+
               className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-300 transition hover:border-gray-600 hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+
             >
 
               <span>
@@ -1035,9 +1418,13 @@ function ChatPage() {
               </span>
 
               <span>
-                {uploading
-                  ? "Uploading..."
-                  : "Project"}
+
+                {
+                  uploading
+                    ? "Uploading..."
+                    : "Project"
+                }
+
               </span>
 
             </button>
@@ -1046,19 +1433,26 @@ function ChatPage() {
             {/* HIDDEN ZIP INPUT */}
 
             <input
+
               ref={
                 projectInputRef
               }
+
               type="file"
+
               accept=".zip"
+
               onChange={
-                handleProjectSelected
+                handleProjectUpload
               }
+
               className="hidden"
+
               disabled={
                 loading ||
                 uploading
               }
+
             />
 
 
@@ -1067,15 +1461,20 @@ function ChatPage() {
             {uploadedFile && (
 
               <button
+
                 type="button"
+
                 onClick={
                   handleRemoveFile
                 }
+
                 disabled={
                   loading ||
                   uploading
                 }
+
                 className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-400 transition hover:border-gray-600 hover:bg-gray-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+
               >
 
                 <span>
@@ -1095,34 +1494,46 @@ function ChatPage() {
         </div>
 
 
-        {/* -----------------------------------------
+        {/* =================================================
             INPUT BOX
-        ----------------------------------------- */}
+        ================================================= */}
 
         <InputBox
-          value={input}
+
+          value={
+            input
+          }
+
           onChange={
             setInput
           }
+
           onSubmit={
             handleSubmit
           }
+
           onStop={
             handleStop
           }
+
           disabled={
-            loading
+            loading ||
+            loadingConversations
           }
+
           loading={
             loading
           }
+
         />
 
       </div>
 
     </div>
+
   );
 }
 
 
 export default ChatPage;
+

@@ -86,3 +86,16 @@ def build_project_context(
         )
 
     return "\n\n".join(sections)
+
+
+def get_project_files_for_context(
+    project,
+):
+
+    return [
+        {
+            "path": file.path,
+            "content": file.content,
+        }
+        for file in project.files
+    ]

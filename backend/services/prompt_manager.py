@@ -9,25 +9,21 @@ from prompts.documentation import DOCUMENTATION_PROMPT
 from prompts.testing import TESTING_PROMPT
 
 PROMPTS = {
-
     "generate": GENERATE_PROMPT,
-
     "debug": DEBUG_PROMPT,
-
     "explain": EXPLAIN_PROMPT,
-
     "review": REVIEW_PROMPT,
-
     "refactor": REFACTOR_PROMPT,
-
     "documentation": DOCUMENTATION_PROMPT,
-
     "testing": TESTING_PROMPT,
 }
 
-def get_system_prompt(mode: str) -> str:
+AVAILABLE_MODES = set(PROMPTS.keys())
 
-    mode = mode.lower().strip()
+def get_system_prompt(mode: str = "generate") -> str:
+    if not mode:
+        mode = "generate"
+    mode = str(mode).lower().strip()
 
     if mode not in PROMPTS:
         mode = "generate"
@@ -36,29 +32,4 @@ def get_system_prompt(mode: str) -> str:
         BASE_SYSTEM_PROMPT
         + "\n\n"
         + PROMPTS[mode]
-    )
-    
-AVAILABLE_MODES = {
-    "generate",
-    "debug",
-    "explain",
-    "review",
-    "refactor",
-    "documentation",
-    "testing",
-}
-
-def get_system_prompt(mode: str) -> str:
-
-    mode = mode.lower().strip()
-
-    if mode not in AVAILABLE_MODES:
-        raise ValueError(
-            f"Unsupported mode: {mode}"
-        )
-
-    return (
-        BASE_SYSTEM_PROMPT
-        + "\n\n"
-        + PROMPTS[mode]
-    )
+    )
