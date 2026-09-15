@@ -11,7 +11,7 @@ class SearchFilesTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Search for a text string or code query across all files in the currently selected project."
+            "Search the contents of project files for a given text or keyword query to locate functions, symbols, or references."
         )
 
     @property
@@ -33,6 +33,18 @@ class SearchFilesTool(BaseTool):
         user_id = kwargs.get("_user_id")
         project_id = kwargs.get("_project_id")
         query = kwargs.get("query")
+
+        if not isinstance(query, str) or not query.strip():
+            return {
+                "success": False,
+                "error": "Query must be a non-empty string.",
+            }
+
+        if len(query) > 500:
+            return {
+                "success": False,
+                "error": "Query is too long. Maximum length is 500 characters.",
+            }
 
         if not db or not user_id or not project_id:
             return {

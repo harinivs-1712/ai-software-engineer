@@ -11,7 +11,7 @@ class ReadFileTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Read the content of a file within the currently selected project."
+            "Read the complete or line-range contents of a specific project file."
         )
 
     @property
@@ -43,6 +43,32 @@ class ReadFileTool(BaseTool):
         path = kwargs.get("path")
         start_line = kwargs.get("start_line")
         end_line = kwargs.get("end_line")
+
+        if not isinstance(path, str) or not path.strip():
+            return {
+                "success": False,
+                "error": "Path must be a non-empty string.",
+            }
+
+        if start_line is not None:
+            if not isinstance(start_line, int) or isinstance(start_line, bool) or start_line < 1:
+                return {
+                    "success": False,
+                    "error": "start_line must be a positive integer.",
+                }
+
+        if end_line is not None:
+            if not isinstance(end_line, int) or isinstance(end_line, bool) or end_line < 1:
+                return {
+                    "success": False,
+                    "error": "end_line must be a positive integer.",
+                }
+
+        if start_line is not None and end_line is not None and start_line > end_line:
+            return {
+                "success": False,
+                "error": "start_line cannot be greater than end_line.",
+            }
 
         if not db or not user_id or not project_id:
             return {

@@ -22,7 +22,15 @@ PROMPTS = {
 
 AVAILABLE_MODES = set(PROMPTS.keys())
 
-def get_system_prompt(mode: str = "generate") -> str:
+def get_system_prompt(mode: str = "generate", project_context: str | None = None) -> str:
+    """Construct the final system prompt following Phase 3 Architecture:
+
+    Global Tool-Aware System Prompt
+                   +
+    Mode-Specific Prompt
+                   +
+    Project Context (if available)
+    """
     if not mode:
         mode = "generate"
     mode = str(mode).lower().strip()
@@ -30,8 +38,9 @@ def get_system_prompt(mode: str = "generate") -> str:
     if mode not in PROMPTS:
         mode = "generate"
 
-    return (
-        BASE_SYSTEM_PROMPT
-        + "\n\n"
-        + PROMPTS[mode]
-    )
+    prompt = BASE_SYSTEM_PROMPT.strip() + "\n\n" + PROMPTS[mode].strip()
+
+    if project_context and str(project_context).strip():
+        prompt += "\n\nCURRENT PROJECT CONTEXT:\n" + str(project_context).strip()
+
+    return prompt

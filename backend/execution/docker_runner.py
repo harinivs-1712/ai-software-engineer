@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,10 +19,15 @@ def run_python_code_fallback(
         code_file.write_text(code, encoding="utf-8")
 
         try:
+            env = dict(os.environ)
+            env["PYTHONIOENCODING"] = "utf-8"
             process = subprocess.run(
                 [sys.executable, str(code_file)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
                 timeout=timeout,
                 cwd=str(workspace),
             )

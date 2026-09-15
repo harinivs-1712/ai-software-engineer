@@ -160,6 +160,9 @@ def read_project_file(
     }
 
 
+MAX_SEARCH_RESULTS = 50
+
+
 def search_project_files(
     db: Session,
     user_id: int,
@@ -194,12 +197,15 @@ def search_project_files(
             if clean_path not in seen_paths:
                 seen_paths.add(clean_path)
                 results.append({"path": clean_path})
+                if len(results) >= MAX_SEARCH_RESULTS:
+                    break
 
     return {
         "success": True,
         "query": query_str,
         "results": results,
         "count": len(results),
+        "truncated": len(seen_paths) >= MAX_SEARCH_RESULTS,
     }
 
 

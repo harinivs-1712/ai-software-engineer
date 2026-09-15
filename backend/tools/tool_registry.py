@@ -4,6 +4,7 @@ from tools.list_files import ListFilesTool
 from tools.read_file import ReadFileTool
 from tools.search_files import SearchFilesTool
 from tools.get_file_info import GetFileInfoTool
+from tools.web_search import WebSearchTool
 
 
 calculator_tool = CalculatorTool()
@@ -12,6 +13,7 @@ list_files_tool = ListFilesTool()
 read_file_tool = ReadFileTool()
 search_files_tool = SearchFilesTool()
 get_file_info_tool = GetFileInfoTool()
+web_search_tool = WebSearchTool()
 
 
 AVAILABLE_TOOLS = {
@@ -21,6 +23,7 @@ AVAILABLE_TOOLS = {
     read_file_tool.name: read_file_tool,
     search_files_tool.name: search_files_tool,
     get_file_info_tool.name: get_file_info_tool,
+    web_search_tool.name: web_search_tool,
 }
 
 

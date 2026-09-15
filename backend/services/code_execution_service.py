@@ -40,7 +40,7 @@ def execute_python(
         timeout=timeout,
     )
 
-    return {
+    res = {
         "language": "python",
         "code": code,
         "success": result["success"],
@@ -49,3 +49,8 @@ def execute_python(
         "exit_code": result["exit_code"],
         "timed_out": result["timed_out"],
     }
+
+    if result.get("timed_out"):
+        res["error"] = f"Execution timed out after {timeout} seconds."
+
+    return res

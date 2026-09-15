@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+import concurrent.futures
 import time
 from google import genai
 from google.genai import types
@@ -6,6 +7,7 @@ from google.genai import types
 from config import GEMINI_API_KEY, MODEL_NAME
 from services.prompt_manager import get_system_prompt
 from services.tool_service import execute_tool, MAX_TOOL_CALLS
+from services.tool_orchestrator import ToolOrchestrator
 from tools.tool_registry import get_tool_definitions
 
 if not GEMINI_API_KEY:
@@ -101,7 +103,7 @@ def generate_response_with_tools(
         ),
     )
 
-    models_to_try = [MODEL_NAME, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.7-flash"]
+    models_to_try = [MODEL_NAME, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.5-flash", "gemini-3.6-flash"]
     seen_models = set()
     active_models = []
     for m in models_to_try:
@@ -202,8 +204,10 @@ def generate_response_with_tools(
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc)
-                if any(k in err_msg for k in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "high demand", "Quota exceeded"]):
-                    time.sleep(1)
+                if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
+                    break
+                elif any(k in err_msg for k in ["503", "UNAVAILABLE", "high demand"]):
+                    time.sleep(0.5)
                     continue
                 else:
                     break
@@ -254,7 +258,7 @@ Instructions:
         tools=tools_config,
     )
 
-    models_to_try = [MODEL_NAME, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.7-flash"]
+    models_to_try = [MODEL_NAME, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.5-flash", "gemini-3.6-flash"]
     seen_models = set()
     active_models = []
     for m in models_to_try:
@@ -315,30 +319,19 @@ Instructions:
                     if initial_check.candidates and initial_check.candidates[0].content:
                         contents.append(initial_check.candidates[0].content)
 
-                    for function_call in function_calls:
+                    # Instantiate tool orchestrator and execute single, sequential, or parallel calls
+                    orchestrator = ToolOrchestrator()
+                    exec_results = orchestrator.orchestrate_tool_calls(
+                        function_calls=function_calls,
+                        user_id=user_id,
+                        project_id=project_id,
+                        db=db,
+                    )
+
+                    for tool_name, tool_result in exec_results:
                         tool_call_count += 1
                         if tool_call_count > MAX_TOOL_CALLS:
                             break
-
-                        tool_name = function_call.name
-                        args = function_call.args if hasattr(function_call, "args") else {}
-
-                        try:
-                            tool_result = execute_tool(
-                                tool_name,
-                                args,
-                                user_id=user_id,
-                                project_id=project_id,
-                                db=db,
-                            )
-                        except Exception as error:
-                            tool_result = {
-                                "tool_name": tool_name,
-                                "result": {
-                                    "success": False,
-                                    "error": str(error),
-                                },
-                            }
 
                         contents.append(
                             types.Content(
@@ -355,8 +348,10 @@ Instructions:
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc)
-                if any(k in err_msg for k in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "high demand", "Quota exceeded"]):
-                    time.sleep(1)
+                if any(k in err_msg for k in ["429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
+                    break
+                elif any(k in err_msg for k in ["503", "UNAVAILABLE", "high demand"]):
+                    time.sleep(0.5)
                     continue
                 else:
                     break

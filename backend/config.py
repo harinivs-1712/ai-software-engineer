@@ -27,7 +27,7 @@ CLIENT_ORIGINS = os.getenv(
 
 MODEL_NAME = os.getenv(
     "MODEL_NAME",
-    "gemini-3.6-flash"
+    "gemini-3.5-flash-lite"
 )
 
 import os

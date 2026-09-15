@@ -11,7 +11,7 @@ class ListFilesTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "List files available inside the currently selected project."
+            "List all relative file paths available inside the currently selected project workspace."
         )
 
     @property

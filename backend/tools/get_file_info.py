@@ -11,7 +11,7 @@ class GetFileInfoTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Retrieve basic file metadata (size, extension, line_count) for a file in the currently selected project."
+            "Retrieve basic file metadata (byte size, file extension, total line_count) for a specific file in the project without reading its full contents."
         )
 
     @property
@@ -33,6 +33,12 @@ class GetFileInfoTool(BaseTool):
         user_id = kwargs.get("_user_id")
         project_id = kwargs.get("_project_id")
         path = kwargs.get("path")
+
+        if not isinstance(path, str) or not path.strip():
+            return {
+                "success": False,
+                "error": "Path must be a non-empty string.",
+            }
 
         if not db or not user_id or not project_id:
             return {
