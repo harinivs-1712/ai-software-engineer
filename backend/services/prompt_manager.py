@@ -7,6 +7,7 @@ from prompts.review import REVIEW_PROMPT
 from prompts.refactor import REFACTOR_PROMPT
 from prompts.documentation import DOCUMENTATION_PROMPT
 from prompts.testing import TESTING_PROMPT
+from prompts.software_engineer import SYSTEM_PROMPT as SOFTWARE_ENGINEER_PROMPT
 
 PROMPTS = {
     "generate": GENERATE_PROMPT,
@@ -16,6 +17,7 @@ PROMPTS = {
     "refactor": REFACTOR_PROMPT,
     "documentation": DOCUMENTATION_PROMPT,
     "testing": TESTING_PROMPT,
+    "software_engineer": SOFTWARE_ENGINEER_PROMPT,
 }
 
 AVAILABLE_MODES = set(PROMPTS.keys())

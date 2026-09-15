@@ -34,6 +34,7 @@ from schemas import (
 
 from services.gemini_service import (
     generate_response_stream,
+    generate_response_with_tools,
 )
 
 from services.project_service import (
@@ -205,6 +206,13 @@ async def chat_stream(
                     data.message,
                 )
 
+    active_proj_id = None
+    if data.project_id:
+        try:
+            active_proj_id = int(data.project_id)
+        except (ValueError, TypeError):
+            pass
+
     def response_stream():
         assistant_response = ""
 
@@ -213,6 +221,9 @@ async def chat_stream(
             previous_messages,
             data.mode,
             project_context,
+            user_id=current_user.id,
+            project_id=active_proj_id,
+            db=db,
         ):
             assistant_response += chunk
             yield chunk

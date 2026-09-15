@@ -5,7 +5,7 @@ from google.genai import types
 
 from config import GEMINI_API_KEY, MODEL_NAME
 from services.prompt_manager import get_system_prompt
-from services.tool_service import execute_tool
+from services.tool_service import execute_tool, MAX_TOOL_CALLS
 from tools.tool_registry import get_tool_definitions
 
 if not GEMINI_API_KEY:
@@ -56,11 +56,169 @@ def build_contents(history, message=None):
     return contents
 
 
+def build_gemini_tools():
+    return [types.Tool(function_declarations=get_tool_definitions())]
+
+
+def generate_response_with_tools(
+    message: str,
+    history,
+    mode: str,
+    project_context: str = "",
+    user_id: int | None = None,
+    project_id: int | None = None,
+    db = None,
+):
+    contents = build_contents(
+        history,
+        message,
+    )
+
+    system_prompt = get_system_prompt(mode)
+
+    if project_context:
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        text=(
+                            "Project context:\n\n"
+                            + project_context
+                        )
+                    )
+                ],
+            )
+        )
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=build_gemini_tools(),
+        automatic_function_calling=(
+            types.AutomaticFunctionCallingConfig(
+                disable=True
+            )
+        ),
+    )
+
+    models_to_try = [MODEL_NAME, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.7-flash"]
+    seen_models = set()
+    active_models = []
+    for m in models_to_try:
+        if m and m not in seen_models:
+            seen_models.add(m)
+            active_models.append(m)
+
+    last_error = None
+
+    for target_model in active_models:
+        for attempt in range(2):
+            try:
+                tool_call_count = 0
+
+                while True:
+
+                    # --------------------------------
+                    # Ask Gemini what to do
+                    # --------------------------------
+
+                    response = client.models.generate_content(
+                        model=target_model,
+                        contents=contents,
+                        config=config,
+                    )
+
+                    # --------------------------------
+                    # No tool call
+                    # --------------------------------
+
+                    if not response.function_calls:
+                        return response.text
+
+                    # --------------------------------
+                    # Tool call detected
+                    # --------------------------------
+
+                    if tool_call_count >= MAX_TOOL_CALLS:
+                        return (
+                            "I reached the maximum number of "
+                            "tool executions allowed for this request."
+                        )
+
+                    # Preserve Gemini's tool-call response
+                    if response.candidates and response.candidates[0].content:
+                        contents.append(
+                            response.candidates[0].content
+                        )
+
+                    # --------------------------------
+                    # Execute every requested tool
+                    # --------------------------------
+
+                    for function_call in response.function_calls:
+
+                        tool_call_count += 1
+
+                        if tool_call_count > MAX_TOOL_CALLS:
+                            break
+
+                        tool_name = function_call.name
+                        arguments = function_call.args or {}
+
+                        try:
+                            tool_result = execute_tool(
+                                tool_name,
+                                arguments,
+                                user_id=user_id,
+                                project_id=project_id,
+                                db=db,
+                            )
+
+                        except Exception as error:
+                            tool_result = {
+                                "tool_name": tool_name,
+                                "result": {
+                                    "success": False,
+                                    "error": str(error),
+                                },
+                            }
+
+                        # --------------------------------
+                        # Inject tool result into Gemini
+                        # --------------------------------
+
+                        contents.append(
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part.from_function_response(
+                                        name=tool_name,
+                                        response=tool_result,
+                                    )
+                                ],
+                            )
+                        )
+
+            except Exception as exc:
+                last_error = exc
+                err_msg = str(exc)
+                if any(k in err_msg for k in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "high demand", "Quota exceeded"]):
+                    time.sleep(1)
+                    continue
+                else:
+                    break
+
+    return f"[Error communicating with Gemini: {str(last_error)}]"
+
+
 def generate_response_stream(
     message: str,
     history,
     mode: str,
     project_context: str = "",
+    user_id: int | None = None,
+    project_id: int | None = None,
+    db = None,
 ) -> Iterator[str]:
 
     final_message = message
@@ -89,7 +247,7 @@ Instructions:
     contents = build_contents(history, final_message)
     system_prompt = get_system_prompt(mode)
 
-    tools_config = [types.Tool(function_declarations=get_tool_definitions())]
+    tools_config = build_gemini_tools()
 
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
@@ -109,168 +267,98 @@ Instructions:
     for target_model in active_models:
         for attempt in range(2):
             try:
-                # Phase 1: Check for initial function call before streaming text
-                initial_check = client.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        tools=tools_config,
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    ),
-                )
+                tool_call_count = 0
+                reported_tool_names = set()
 
-                function_calls = getattr(initial_check, "function_calls", None)
+                while True:
+                    initial_check = client.models.generate_content(
+                        model=target_model,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            tools=tools_config,
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                        ),
+                    )
 
-                if function_calls:
-                    # De-duplicate tool names for clean formatting
-                    unique_tools = []
-                    seen_tools = set()
+                    function_calls = getattr(initial_check, "function_calls", None)
+
+                    if not function_calls:
+                        # Model is done calling tools, stream final answer
+                        stream = client.models.generate_content_stream(
+                            model=target_model,
+                            contents=contents,
+                            config=config,
+                        )
+                        for chunk in stream:
+                            if chunk.text:
+                                yield chunk.text
+                        return
+
+                    if tool_call_count >= MAX_TOOL_CALLS:
+                        yield f"\n[Reached maximum number of tool executions allowed ({MAX_TOOL_CALLS})]"
+                        return
+
+                    # Format visual badge for newly invoked tools in this request
+                    new_tools = []
                     for fc in function_calls:
-                        tool_name = fc.name.replace("_", " ").title()
-                        if tool_name not in seen_tools:
-                            seen_tools.add(tool_name)
-                            unique_tools.append(tool_name)
+                        t_name = fc.name
+                        if t_name not in reported_tool_names:
+                            reported_tool_names.add(t_name)
+                            new_tools.append(t_name.replace("_", " ").title())
 
-                    tool_str = ", ".join(unique_tools)
-                    suffix = "Tool" if len(unique_tools) == 1 else "Tools"
-                    yield f"🛠️ *Used {tool_str} {suffix}*\n\n"
+                    if new_tools:
+                        tool_str = ", ".join(new_tools)
+                        suffix = "Tool" if len(new_tools) == 1 else "Tools"
+                        yield f"🛠️ *Used {tool_str} {suffix}*\n\n"
 
                     if initial_check.candidates and initial_check.candidates[0].content:
                         contents.append(initial_check.candidates[0].content)
 
-                    # Function Call Branch: execute tool & construct function response part
                     for function_call in function_calls:
+                        tool_call_count += 1
+                        if tool_call_count > MAX_TOOL_CALLS:
+                            break
+
+                        tool_name = function_call.name
                         args = function_call.args if hasattr(function_call, "args") else {}
-                        result = execute_tool(
-                            function_call.name,
-                            args,
-                        )
+
+                        try:
+                            tool_result = execute_tool(
+                                tool_name,
+                                args,
+                                user_id=user_id,
+                                project_id=project_id,
+                                db=db,
+                            )
+                        except Exception as error:
+                            tool_result = {
+                                "tool_name": tool_name,
+                                "result": {
+                                    "success": False,
+                                    "error": str(error),
+                                },
+                            }
 
                         contents.append(
                             types.Content(
                                 role="user",
                                 parts=[
                                     types.Part.from_function_response(
-                                        name=function_call.name,
-                                        response=result,
+                                        name=tool_name,
+                                        response=tool_result,
                                     )
                                 ],
                             )
                         )
 
-                    # Stream final response after tool execution
-                    stream = client.models.generate_content_stream(
-                        model=target_model,
-                        contents=contents,
-                        config=config,
-                    )
-                    for chunk in stream:
-                        if chunk.text:
-                            yield chunk.text
-                    return
-
-                # Direct Stream Branch (No Function Call Needed)
-                stream = client.models.generate_content_stream(
-                    model=target_model,
-                    contents=contents,
-                    config=config,
-                )
-                for chunk in stream:
-                    if chunk.text:
-                        yield chunk.text
-                return
-
             except Exception as exc:
                 last_error = exc
                 err_msg = str(exc)
-                if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg:
+                if any(k in err_msg for k in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "high demand", "Quota exceeded"]):
                     time.sleep(1)
                     continue
                 else:
                     break
 
     yield f"\n[Error communicating with Gemini: {str(last_error)}]"
-    
-    
-def build_gemini_tools():
-    return [types.Tool(function_declarations=get_tool_definitions())]
-    
-def generate_response_with_tools(
-    message: str,
-    history,
-    mode: str,
-    project_context: str = "",
-):
-    contents = build_contents(
-        history,
-        message,
-    )
-
-    system_prompt = get_system_prompt(mode)
-
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        tools=build_gemini_tools(),
-        automatic_function_calling=(
-            types.AutomaticFunctionCallingConfig(
-                disable=True
-            )
-        ),
-    )
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=contents,
-        config=config,
-    )
-
-    # -------------------------
-    # No tool requested
-    # -------------------------
-
-    if not response.function_calls:
-        return response.text
-
-    # -------------------------
-    # Tool requested
-    # -------------------------
-
-    contents.append(
-        response.candidates[0].content
-    )
-
-    for function_call in response.function_calls:
-
-        tool_name = function_call.name
-        arguments = function_call.args or {}
-
-        tool_result = execute_tool(
-            tool_name,
-            arguments,
-        )
-
-        contents.append(
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_function_response(
-                        name=tool_name,
-                        response=tool_result,
-                        id=function_call.id,
-                    )
-                ],
-            )
-        )
-
-    # -------------------------
-    # Send result back to Gemini
-    # -------------------------
-
-    final_response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=contents,
-        config=config,
-    )
-
-    return final_response.text
