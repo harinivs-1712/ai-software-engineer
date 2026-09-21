@@ -1,0 +1,168 @@
+import logging
+import math
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    """Compute Cosine Similarity between two numerical vectors.
+
+    Formula: (A · B) / (||A|| * ||B||)
+    Range: [-1.0, 1.0] (1.0 = identical direction, 0.0 = orthogonal, -1.0 = opposite direction)
+
+    Primary metric for semantic search.
+
+    Args:
+        vec_a: First float vector list.
+        vec_b: Second float vector list.
+
+    Returns:
+        float: Cosine similarity score between -1.0 and 1.0.
+
+    Raises:
+        ValueError: If inputs are invalid, non-numerical, empty, or have mismatched dimensions.
+    """
+    if not isinstance(vec_a, (list, tuple)) or not isinstance(vec_b, (list, tuple)):
+        raise ValueError("Vectors must be lists or tuples of numerical floats.")
+
+    if len(vec_a) != len(vec_b):
+        raise ValueError(
+            f"Vector dimension mismatch: len(vec_a)={len(vec_a)} != len(vec_b)={len(vec_b)}"
+        )
+
+    if not vec_a:
+        raise ValueError("Vectors cannot be empty.")
+
+    dot = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+
+    sim = dot / (norm_a * norm_b)
+    # Clamp to [-1.0, 1.0] to handle minor floating-point precision bounds
+    return max(-1.0, min(1.0, float(sim)))
+
+
+def dot_product(vec_a: List[float], vec_b: List[float]) -> float:
+    """Compute Dot Product scalar between two numerical vectors.
+
+    Formula: sum(A_i * B_i)
+
+    Args:
+        vec_a: First float vector list.
+        vec_b: Second float vector list.
+
+    Returns:
+        float: Dot product scalar.
+
+    Raises:
+        ValueError: If inputs are invalid, empty, or have mismatched dimensions.
+    """
+    if not isinstance(vec_a, (list, tuple)) or not isinstance(vec_b, (list, tuple)):
+        raise ValueError("Vectors must be lists or tuples of numerical floats.")
+
+    if len(vec_a) != len(vec_b):
+        raise ValueError(
+            f"Vector dimension mismatch: len(vec_a)={len(vec_a)} != len(vec_b)={len(vec_b)}"
+        )
+
+    if not vec_a:
+        raise ValueError("Vectors cannot be empty.")
+
+    return float(sum(a * b for a, b in zip(vec_a, vec_b)))
+
+
+def euclidean_distance(vec_a: List[float], vec_b: List[float]) -> float:
+    """Compute Euclidean Distance between two numerical vectors.
+
+    Formula: sqrt(sum((A_i - B_i)^2))
+
+    Args:
+        vec_a: First float vector list.
+        vec_b: Second float vector list.
+
+    Returns:
+        float: Non-negative Euclidean distance.
+
+    Raises:
+        ValueError: If inputs are invalid, empty, or have mismatched dimensions.
+    """
+    if not isinstance(vec_a, (list, tuple)) or not isinstance(vec_b, (list, tuple)):
+        raise ValueError("Vectors must be lists or tuples of numerical floats.")
+
+    if len(vec_a) != len(vec_b):
+        raise ValueError(
+            f"Vector dimension mismatch: len(vec_a)={len(vec_a)} != len(vec_b)={len(vec_b)}"
+        )
+
+    if not vec_a:
+        raise ValueError("Vectors cannot be empty.")
+
+    dist_sq = sum((a - b) ** 2 for a, b in zip(vec_a, vec_b))
+    return float(math.sqrt(dist_sq))
+
+
+def find_most_similar(
+    query_vector: List[float],
+    candidates: List[Dict[str, Any]],
+    top_k: int = 5,
+    metric: str = "cosine",
+) -> List[Dict[str, Any]]:
+    """Rank candidate vector objects by similarity relative to a query vector.
+
+    Preserves candidate metadata (chunk_id, symbol, type, start_line, end_line, metadata).
+
+    Args:
+        query_vector: Target query vector float list.
+        candidates: List of candidate records (e.g., [{'chunk_id': ..., 'embedding': [...], 'content': ...}]).
+        top_k: Number of highest ranking results to return.
+        metric: Primary similarity metric ('cosine', 'dot', or 'euclidean').
+
+    Returns:
+        List[Dict[str, Any]]: Ranked results containing metadata, score, and metric.
+    """
+    if not candidates or not query_vector:
+        return []
+
+    results = []
+    metric = metric.lower()
+
+    for item in candidates:
+        file_id = item.get("file") or item.get("path") or item.get("id", "unknown")
+        cand_vec = item.get("embedding") or item.get("vector")
+        content = item.get("content", "")
+
+        if not cand_vec:
+            continue
+
+        try:
+            if metric == "cosine":
+                score = cosine_similarity(query_vector, cand_vec)
+            elif metric == "dot":
+                score = dot_product(query_vector, cand_vec)
+            elif metric == "euclidean":
+                # Lower Euclidean distance means higher similarity; negate distance for uniform descending sorting
+                dist = euclidean_distance(query_vector, cand_vec)
+                score = -dist
+            else:
+                raise ValueError(f"Unsupported similarity metric: '{metric}'")
+
+            # Copy all metadata from candidate item
+            result_item = dict(item)
+            result_item["file"] = file_id
+            result_item["score"] = score
+            result_item["metric"] = metric
+            result_item["content"] = content
+            results.append(result_item)
+
+        except Exception as err:
+            logger.warning(
+                f"Similarity calculation failed for candidate '{file_id}': {err}"
+            )
+
+    # Sort descending by score (highest similarity score first)
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:top_k]
