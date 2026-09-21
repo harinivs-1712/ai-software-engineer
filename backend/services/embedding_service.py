@@ -1,7 +1,9 @@
+import concurrent.futures
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from google import genai
+from google.genai import types
 
 from config import GEMINI_API_KEY
 
@@ -14,11 +16,15 @@ DEFAULT_EMBEDDING_MODELS = [
     "models/gemini-embedding-001",
 ]
 
+# Safe character ceiling to ensure inputs stay under gemini-embedding-001 2,048 token limit (~8,000 chars)
+MAX_EMBEDDING_CHARS = 6000
+
 
 class EmbeddingService:
     """Service to generate vector embeddings for text or code input using Gemini embedding models.
 
-    Encapsulates provider details and exposes a clean, provider-agnostic interface.
+    Encapsulates provider details, task types (RETRIEVAL_DOCUMENT vs CODE_RETRIEVAL_QUERY),
+    input truncation protection, and exact model identity reporting.
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -41,25 +47,25 @@ class EmbeddingService:
 
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    def generate_embedding(
+    def generate_embedding_with_meta(
         self,
         text_or_code: str,
         model_name: Optional[str] = None,
-    ) -> List[float]:
-        """Accept text (documentation, project descriptions, README, user queries) or code as input,
+        task_type: Optional[str] = None,
+        max_chars: int = MAX_EMBEDDING_CHARS,
+    ) -> Tuple[List[float], str, int]:
+        """Accept text or code as input, apply truncation protection & task type configuration,
 
-        send it to the embedding model, and return the vector list.
-
-        Reusability Guarantee:
-        Single entry point regardless of whether input comes from:
-            File -> Code -> Documentation -> User Query
+        send it to Gemini embedding models, and return (vector, model_used, dimension).
 
         Args:
             text_or_code: Input text or code snippet to embed.
             model_name: Optional specific model name.
+            task_type: Gemini embedding task type ('RETRIEVAL_DOCUMENT', 'CODE_RETRIEVAL_QUERY', 'RETRIEVAL_QUERY').
+            max_chars: Maximum character limit per input string.
 
         Returns:
-            List[float]: The generated embedding vector representation.
+            Tuple[List[float], str, int]: (embedding_vector, actual_model_used, dimension)
 
         Raises:
             ValueError: If input is empty or invalid.
@@ -72,8 +78,14 @@ class EmbeddingService:
         if not content:
             raise ValueError("Input text_or_code cannot be empty.")
 
-        client = self._get_client()
+        # Truncation policy: protect against token ceiling (>2,048 tokens limit)
+        if len(content) > max_chars:
+            logger.warning(
+                f"Input text/code length ({len(content)} chars) exceeds maximum safety limit ({max_chars} chars). Truncating."
+            )
+            content = content[:max_chars]
 
+        client = self._get_client()
         models_to_try = [model_name] if model_name else DEFAULT_EMBEDDING_MODELS
 
         last_error = None
@@ -81,10 +93,18 @@ class EmbeddingService:
             if not model:
                 continue
             try:
-                response = client.models.embed_content(
-                    model=model,
-                    contents=content,
-                )
+                if task_type:
+                    config = types.EmbedContentConfig(task_type=task_type)
+                    response = client.models.embed_content(
+                        model=model,
+                        contents=content,
+                        config=config,
+                    )
+                else:
+                    response = client.models.embed_content(
+                        model=model,
+                        contents=content,
+                    )
 
                 if (
                     response
@@ -96,7 +116,8 @@ class EmbeddingService:
                         hasattr(embedding_obj, "values")
                         and embedding_obj.values is not None
                     ):
-                        return [float(val) for val in embedding_obj.values]
+                        vector = [float(val) for val in embedding_obj.values]
+                        return vector, model, len(vector)
 
                 raise RuntimeError(
                     f"Embedding model '{model}' returned empty embedding values."
@@ -110,32 +131,40 @@ class EmbeddingService:
 
         raise RuntimeError(f"Failed to generate embedding: {str(last_error)}")
 
+    def generate_embedding(
+        self,
+        text_or_code: str,
+        model_name: Optional[str] = None,
+        task_type: Optional[str] = None,
+    ) -> List[float]:
+        """Generate vector embedding array for code or text input."""
+        vector, _, _ = self.generate_embedding_with_meta(
+            text_or_code=text_or_code,
+            model_name=model_name,
+            task_type=task_type,
+        )
+        return vector
+
     def generate_text_embedding(
         self,
         text: str,
         model_name: Optional[str] = None,
+        task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
     ) -> List[float]:
         """Alias method specifically for ordinary text inputs (documentation, comments, queries, READMEs)."""
-        return self.generate_embedding(text, model_name=model_name)
+        return self.generate_embedding(text, model_name=model_name, task_type=task_type)
 
     def get_embedding(
         self,
         text_or_code: str,
         model_name: Optional[str] = None,
+        task_type: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Safe wrapper returning structured dictionary exposing all verification properties:
-
-        - input: processed input string snippet
-        - success: bool indicating successful processing
-        - model: embedding model used
-        - dimension: integer N (e.g. 3072)
-        - vector: float vector array
-        - error: None or error string
-        """
+        """Safe wrapper returning structured dictionary exposing exact model that succeeded."""
         chosen_model = model_name or DEFAULT_EMBEDDING_MODELS[0]
         try:
-            vector = self.generate_embedding(
-                text_or_code, model_name=model_name
+            vector, actual_model, dim = self.generate_embedding_with_meta(
+                text_or_code, model_name=model_name, task_type=task_type
             )
             input_summary = (
                 text_or_code
@@ -146,8 +175,9 @@ class EmbeddingService:
                 "input": input_summary,
                 "content": text_or_code,
                 "success": True,
-                "model": chosen_model,
-                "dimension": len(vector),
+                "model": actual_model,
+                "model_used": actual_model,
+                "dimension": dim,
                 "vector": vector,
                 "error": None,
             }
@@ -163,6 +193,7 @@ class EmbeddingService:
                 "content": input_str,
                 "success": False,
                 "model": chosen_model,
+                "model_used": None,
                 "dimension": 0,
                 "vector": [],
                 "error": str(exc),
@@ -176,12 +207,9 @@ class EmbeddingService:
         user_id: Optional[int] = None,
         project_id: Optional[int] = None,
         model_name: Optional[str] = None,
+        task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
     ) -> Dict[str, Any]:
-        """Convert a project file or code file into an embedding vector based on actual code content.
-
-        Flow:
-            file_path -> Read file / Extract content -> Embedding Model -> Vector
-        """
+        """Convert a project file or code file into an embedding vector with exact model metadata."""
         chosen_model = model_name or DEFAULT_EMBEDDING_MODELS[0]
         if not isinstance(file_path, str) or not file_path.strip():
             return {
@@ -190,6 +218,7 @@ class EmbeddingService:
                 "content": "",
                 "success": False,
                 "model": chosen_model,
+                "model_used": None,
                 "dimension": 0,
                 "vector": [],
                 "error": "File path must be a non-empty string.",
@@ -197,7 +226,6 @@ class EmbeddingService:
 
         extracted_code = content
 
-        # Option A: Read from Database project storage if db context provided
         if extracted_code is None and db is not None and user_id is not None and project_id is not None:
             try:
                 from services.file_system_service import read_project_file
@@ -216,6 +244,7 @@ class EmbeddingService:
                         "content": "",
                         "success": False,
                         "model": chosen_model,
+                        "model_used": None,
                         "dimension": 0,
                         "vector": [],
                         "error": read_res.get("error", "Failed to read project file from database."),
@@ -227,12 +256,12 @@ class EmbeddingService:
                     "content": "",
                     "success": False,
                     "model": chosen_model,
+                    "model_used": None,
                     "dimension": 0,
                     "vector": [],
                     "error": f"Error reading project file: {str(read_err)}",
                 }
 
-        # Option B: Read from local disk path if file exists
         if extracted_code is None:
             p = Path(file_path)
             if p.is_file():
@@ -245,6 +274,7 @@ class EmbeddingService:
                         "content": "",
                         "success": False,
                         "model": chosen_model,
+                        "model_used": None,
                         "dimension": 0,
                         "vector": [],
                         "error": f"Failed to read disk file '{file_path}': {str(file_read_err)}",
@@ -257,21 +287,24 @@ class EmbeddingService:
                 "content": "",
                 "success": False,
                 "model": chosen_model,
+                "model_used": None,
                 "dimension": 0,
                 "vector": [],
-                "error": f"File content for '{file_path}' is empty or could not be loaded. (Filename alone is not embedded)",
+                "error": f"File content for '{file_path}' is empty or could not be loaded.",
             }
 
-        # Generate vector representation of the file's code/content
         try:
-            vector = self.generate_embedding(extracted_code, model_name=model_name)
+            vector, actual_model, dim = self.generate_embedding_with_meta(
+                extracted_code, model_name=model_name, task_type=task_type
+            )
             return {
                 "input": file_path,
                 "path": file_path,
                 "content": extracted_code,
                 "success": True,
-                "model": chosen_model,
-                "dimension": len(vector),
+                "model": actual_model,
+                "model_used": actual_model,
+                "dimension": dim,
                 "vector": vector,
                 "error": None,
             }
@@ -282,6 +315,7 @@ class EmbeddingService:
                 "content": extracted_code,
                 "success": False,
                 "model": chosen_model,
+                "model_used": None,
                 "dimension": 0,
                 "vector": [],
                 "error": str(exc),
@@ -291,61 +325,74 @@ class EmbeddingService:
 class TemporaryEmbeddingPipeline:
     """In-memory temporary embedding storage pipeline.
 
-    Stores generated vectors per chunk in memory in the format:
-    {
-        "chunk_id": "backend/auth.py:function:authenticate_user",
-        "file": "backend/auth.py",
-        "symbol": "authenticate_user",
-        "type": "function",
-        "start_line": 25,
-        "end_line": 48,
-        "embedding": [0.13, -0.82, 0.41, ...],
-        "content": "..."
-    }
-
-    Does NOT use a persistent vector database yet.
+    Multi-tenant Scoped Architecture:
+        Self-contained dict scoped by (user_id, project_id) composite keys to prevent data leakage across projects.
     """
 
     def __init__(self, service: Optional[EmbeddingService] = None):
         self.service = service or get_embedding_service()
-        self._store: Dict[str, Dict[str, Any]] = {}
+        # Storage dictionary: key = "user_id:project_id", value = {chunk_id: chunk_record}
+        self._store: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    def _get_scope_key(self, user_id: Optional[int] = None, project_id: Optional[int] = None) -> str:
+        u_str = str(user_id) if user_id is not None else "global"
+        p_str = str(project_id) if project_id is not None else "global"
+        return f"{u_str}:{p_str}"
 
     def store_embedding(
         self,
         identifier: str,
         text_or_code: str,
         metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        project_id: Optional[int] = None,
+        task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
     ) -> Dict[str, Any]:
-        """Generate embedding for text/code and store temporarily in memory."""
-        vector = self.service.generate_embedding(text_or_code)
+        """Generate embedding for text/code and store temporarily in tenant-scoped memory."""
+        vector, model_used, dim = self.service.generate_embedding_with_meta(
+            text_or_code, task_type=task_type
+        )
+        scope = self._get_scope_key(user_id, project_id)
+
+        meta = dict(metadata or {})
+        meta["model_used"] = model_used
+
         entry = {
             "chunk_id": identifier,
-            "file": (metadata or {}).get("file", identifier),
-            "symbol": (metadata or {}).get("symbol", identifier),
-            "type": (metadata or {}).get("type", "text"),
+            "file": meta.get("file", identifier),
+            "symbol": meta.get("symbol", identifier),
+            "type": meta.get("type", "text"),
+            "model": model_used,
+            "model_used": model_used,
             "embedding": vector,
             "content": text_or_code,
-            "dimension": len(vector),
-            "metadata": metadata or {},
+            "dimension": dim,
+            "metadata": meta,
         }
-        self._store[identifier] = entry
+
+        if scope not in self._store:
+            self._store[scope] = {}
+        self._store[scope][identifier] = entry
         return entry
 
     def store_chunk(
         self,
         chunk: Dict[str, Any],
         model_name: Optional[str] = None,
+        user_id: Optional[int] = None,
+        project_id: Optional[int] = None,
+        task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
     ) -> Dict[str, Any]:
-        """Generate vector embedding for a single code chunk and store in memory (Requirement 10).
-
-        Flow:
-            File -> Chunking -> Code Chunk + Metadata -> Embedding -> Vector per Chunk
-        """
+        """Generate vector embedding for a single code chunk and store in tenant memory."""
         chunk_id = chunk.get("chunk_id") or "unknown_chunk"
         content = chunk.get("content", "")
-        metadata = chunk.get("metadata", {})
+        metadata = dict(chunk.get("metadata", {}))
 
-        vector = self.service.generate_embedding(content, model_name=model_name)
+        vector, model_used, dim = self.service.generate_embedding_with_meta(
+            content, model_name=model_name, task_type=task_type
+        )
+
+        metadata["model_used"] = model_used
 
         entry = {
             "chunk_id": chunk_id,
@@ -355,25 +402,73 @@ class TemporaryEmbeddingPipeline:
             "start_line": metadata.get("start_line", 1),
             "end_line": metadata.get("end_line", 1),
             "language": metadata.get("language", "python"),
+            "model": model_used,
+            "model_used": model_used,
             "embedding": vector,
-            "dimension": len(vector),
+            "dimension": dim,
             "content": content,
             "metadata": metadata,
         }
-        self._store[chunk_id] = entry
+
+        scope = self._get_scope_key(user_id, project_id)
+        if scope not in self._store:
+            self._store[scope] = {}
+        self._store[scope][chunk_id] = entry
+        print(
+            "[EMBEDDING TRACE] Vector stored: "
+            f"chunk_id={chunk_id!r}, model={model_used!r}, dimension={dim}, "
+            f"task_type={task_type!r}, scope={scope!r}, "
+            f"vector_preview={[round(value, 5) for value in vector[:5]]}",
+            flush=True,
+        )
         return entry
 
     def store_chunks(
         self,
         chunks: List[Dict[str, Any]],
         model_name: Optional[str] = None,
+        user_id: Optional[int] = None,
+        project_id: Optional[int] = None,
+        task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
+        max_workers: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Batch store vector embeddings for a list of code chunks."""
-        results = []
-        for c in chunks:
-            res = self.store_chunk(c, model_name=model_name)
-            results.append(res)
-        return results
+        """Batch store vector embeddings concurrently using parallel worker pool."""
+        if not chunks:
+            return []
+
+        print(
+            "[EMBEDDING TRACE] Embedding "
+            f"{len(chunks)} chunk(s) with task_type={task_type!r}, "
+            f"scope={self._get_scope_key(user_id, project_id)!r}.",
+            flush=True,
+        )
+
+        # Process parallel worker pool to speed up chunk indexing
+        results = [None] * len(chunks)
+
+        def _process_item(index: int, item: Dict[str, Any]):
+            try:
+                res = self.store_chunk(
+                    chunk=item,
+                    model_name=model_name,
+                    user_id=user_id,
+                    project_id=project_id,
+                    task_type=task_type,
+                )
+                results[index] = res
+            except Exception as err:
+                logger.error(f"Failed to embed chunk '{item.get('chunk_id')}': {err}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_process_item, i, c) for i, c in enumerate(chunks)]
+            concurrent.futures.wait(futures)
+
+        stored = [r for r in results if r is not None]
+        print(
+            f"[EMBEDDING TRACE] Embedding complete: {len(stored)}/{len(chunks)} vector(s) stored.\n",
+            flush=True,
+        )
+        return stored
 
     def store_file(
         self,
@@ -400,40 +495,66 @@ class TemporaryEmbeddingPipeline:
             from services.chunking_service import chunk_file
             chunks = chunk_file(file_path, extracted_content)
             if chunks:
-                stored = self.store_chunks(chunks)
+                stored = self.store_chunks(chunks, user_id=user_id, project_id=project_id)
                 return stored[0]
 
-        # Fallback to whole file embedding if chunking returns nothing
         res = self.service.generate_file_embedding(
             file_path=file_path, content=content, db=db, user_id=user_id, project_id=project_id
         )
         if not res.get("success"):
             raise RuntimeError(res.get("error", f"Failed to generate embedding for '{file_path}'."))
 
+        scope = self._get_scope_key(user_id, project_id)
         entry = {
             "chunk_id": f"{file_path}:file:full",
             "file": file_path,
             "symbol": Path(file_path).stem,
             "type": "file",
+            "model": res.get("model_used", "gemini-embedding-001"),
+            "model_used": res.get("model_used", "gemini-embedding-001"),
             "embedding": res["vector"],
             "content": res.get("content", ""),
             "dimension": res["dimension"],
-            "metadata": {"file": file_path, "type": "file", "symbol": Path(file_path).stem},
+            "metadata": {"file": file_path, "type": "file", "symbol": Path(file_path).stem, "model_used": res.get("model_used")},
         }
-        self._store[file_path] = entry
+
+        if scope not in self._store:
+            self._store[scope] = {}
+        self._store[scope][file_path] = entry
         return entry
 
-    def get(self, identifier: str) -> Optional[Dict[str, Any]]:
-        """Retrieve stored temporary chunk embedding record."""
-        return self._store.get(identifier)
+    def get(self, identifier: str, user_id: Optional[int] = None, project_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve stored temporary chunk embedding record for specified tenant."""
+        scope = self._get_scope_key(user_id, project_id)
+        if scope in self._store:
+            return self._store[scope].get(identifier)
+        # Fallback search across all scopes if global identifier requested
+        for tenant_store in self._store.values():
+            if identifier in tenant_store:
+                return tenant_store[identifier]
+        return None
 
-    def list_all(self) -> List[Dict[str, Any]]:
-        """Return all temporary in-memory chunk vectors."""
-        return [dict(item) for item in self._store.values()]
+    def list_all(self, user_id: Optional[int] = None, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return all temporary in-memory chunk vectors for tenant scope."""
+        if user_id is not None or project_id is not None:
+            scope = self._get_scope_key(user_id, project_id)
+            tenant_store = self._store.get(scope, {})
+            return [dict(item) for item in tenant_store.values()]
 
-    def clear(self) -> None:
-        """Clear temporary in-memory store."""
-        self._store.clear()
+        # Return all stored vectors across all tenant scopes
+        all_entries = []
+        for tenant_store in self._store.values():
+            all_entries.extend([dict(item) for item in tenant_store.values()])
+        return all_entries
+
+    def clear(self, user_id: Optional[int] = None, project_id: Optional[int] = None) -> None:
+        """Clear temporary in-memory store for a specific user & project tenant or globally."""
+        if user_id is not None or project_id is not None:
+            scope = self._get_scope_key(user_id, project_id)
+            if scope in self._store:
+                self._store[scope].clear()
+        else:
+            self._store.clear()
 
 
 # Singleton service instances and module-level helpers
@@ -460,28 +581,31 @@ def get_temporary_pipeline() -> TemporaryEmbeddingPipeline:
 def generate_embedding(
     text_or_code: str,
     model_name: Optional[str] = None,
+    task_type: Optional[str] = None,
 ) -> List[float]:
     """Reusable, provider-agnostic interface to generate an embedding vector."""
     service = get_embedding_service()
-    return service.generate_embedding(text_or_code, model_name=model_name)
+    return service.generate_embedding(text_or_code, model_name=model_name, task_type=task_type)
 
 
 def generate_text_embedding(
     text: str,
     model_name: Optional[str] = None,
+    task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
 ) -> List[float]:
-    """Generate vector embedding for general text (documentation, comments, user queries, READMEs)."""
+    """Generate vector embedding for general text."""
     service = get_embedding_service()
-    return service.generate_text_embedding(text, model_name=model_name)
+    return service.generate_text_embedding(text, model_name=model_name, task_type=task_type)
 
 
 def get_embedding(
     text_or_code: str,
     model_name: Optional[str] = None,
+    task_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Module-level function returning structured embedding result dict for property verification."""
+    """Module-level function returning structured embedding result dict with exact model identity."""
     service = get_embedding_service()
-    return service.get_embedding(text_or_code, model_name=model_name)
+    return service.get_embedding(text_or_code, model_name=model_name, task_type=task_type)
 
 
 def generate_file_embedding(
@@ -491,6 +615,7 @@ def generate_file_embedding(
     user_id: Optional[int] = None,
     project_id: Optional[int] = None,
     model_name: Optional[str] = None,
+    task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
 ) -> Dict[str, Any]:
     """Module-level function to convert a project file into an embedding based on its code content."""
     service = get_embedding_service()
@@ -501,35 +626,45 @@ def generate_file_embedding(
         user_id=user_id,
         project_id=project_id,
         model_name=model_name,
+        task_type=task_type,
     )
 
 
 def store_temporary_chunk(
     chunk: Dict[str, Any],
     model_name: Optional[str] = None,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
 ) -> Dict[str, Any]:
     """Store vector embedding for a single code chunk in temporary memory."""
     pipeline = get_temporary_pipeline()
-    return pipeline.store_chunk(chunk, model_name=model_name)
+    return pipeline.store_chunk(chunk, model_name=model_name, user_id=user_id, project_id=project_id, task_type=task_type)
 
 
 def store_temporary_chunks(
     chunks: List[Dict[str, Any]],
     model_name: Optional[str] = None,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
 ) -> List[Dict[str, Any]]:
     """Store vector embeddings for a list of code chunks in temporary memory."""
     pipeline = get_temporary_pipeline()
-    return pipeline.store_chunks(chunks, model_name=model_name)
+    return pipeline.store_chunks(chunks, model_name=model_name, user_id=user_id, project_id=project_id, task_type=task_type)
 
 
 def store_temporary_embedding(
     identifier: str,
     text_or_code: str,
     metadata: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    task_type: Optional[str] = "RETRIEVAL_DOCUMENT",
 ) -> Dict[str, Any]:
     """Store generated vector temporarily in memory with content metadata."""
     pipeline = get_temporary_pipeline()
-    return pipeline.store_embedding(identifier, text_or_code, metadata=metadata)
+    return pipeline.store_embedding(identifier, text_or_code, metadata=metadata, user_id=user_id, project_id=project_id, task_type=task_type)
 
 
 def store_temporary_file(
@@ -550,13 +685,13 @@ def store_temporary_file(
     )
 
 
-def list_temporary_embeddings() -> List[Dict[str, Any]]:
-    """List all vectors currently stored in temporary memory with file and content metadata."""
+def list_temporary_embeddings(user_id: Optional[int] = None, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """List all vectors currently stored in temporary memory for tenant scope."""
     pipeline = get_temporary_pipeline()
-    return pipeline.list_all()
+    return pipeline.list_all(user_id=user_id, project_id=project_id)
 
 
-def clear_temporary_embeddings() -> None:
-    """Clear in-memory temporary vector store."""
+def clear_temporary_embeddings(user_id: Optional[int] = None, project_id: Optional[int] = None) -> None:
+    """Clear in-memory temporary vector store for tenant scope."""
     pipeline = get_temporary_pipeline()
-    pipeline.clear()
+    pipeline.clear(user_id=user_id, project_id=project_id)

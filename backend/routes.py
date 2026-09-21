@@ -305,6 +305,28 @@ async def upload_project(
         files=project_files,
     )
 
+    # Index at upload time so the terminal exposes the complete chunking and
+    # embedding flow before the first chat question. A retrieval failure must
+    # not reject an otherwise valid project upload.
+    try:
+        from services.semantic_search_service import index_project_files_to_temporary_store
+
+        print(
+            f"\n[EMBEDDING TRACE] Project upload complete; indexing project "
+            f"id={project.id}, name={project.name!r}.",
+            flush=True,
+        )
+        index_project_files_to_temporary_store(
+            db=db,
+            user_id=current_user.id,
+            project_id=project.id,
+        )
+    except Exception as embedding_error:
+        print(
+            f"[EMBEDDING TRACE] Upload succeeded, but initial embedding index failed: {embedding_error}",
+            flush=True,
+        )
+
     return {
         "id": project.id,
         "name": project.name,

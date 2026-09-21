@@ -114,7 +114,10 @@ def build_project_context(
 
                 return "\n\n".join(sections)
     except Exception as err:
-        pass
+        print(
+            f"[EMBEDDING TRACE] Semantic retrieval failed; falling back to keyword context: {err}",
+            flush=True,
+        )
 
     # Fallback to keyword search if vector embedding fails
     relevant_files = select_relevant_files(
